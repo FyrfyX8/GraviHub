@@ -1,4 +1,5 @@
 import time
+import json
 
 from RPLCD.i2c import CharLCD
 import RPi.GPIO as GPIO
@@ -13,18 +14,33 @@ buttonPin = 27
 
 GPIO.setup(buttonPin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-
-CursorPos: int = 0
+CursorPos = 0
 MenuIndex = 0
+MacAdresses = ["new"]
+SlotsMM = ["add new Connection"]
+SlotsCM = ["Main Menu","Start Skript","Disconnect","Delete Connection"]
+MainMenu = [SlotsMM, MacAdresses]
+MenuDeph = 0
 def valueChanged(value, direction):
-    global MenuIndex, CursorPos
-
+    global MenuIndex, CursorPos, CursorPrPos
+    CursorPrPos = CursorPos
     if direction == "L" :
         CursorPos -= 1
-
     else:
         CursorPos += 1
-    print(CursorPos)
+
+    if CursorPos == -1:
+        CursorPos = 0
+        MenuIndex -=1
+    elif CursorPos == 4:
+        CursorPos = 3
+        MenuIndex += 1
+    if CursorPos == CursorPrPos:
+        pass
+    else:
+        Cursor(CursorPrPos)
+
+    print(CursorPos, MenuIndex)
 
 e1 = Encoder(4,17, valueChanged)
 bridge = gb.Bridge()
@@ -42,9 +58,11 @@ lcd.cursor_pos = (1, 0)
 lcd.write_string('Welcome to GraviHub!')
 sleep(2)
 try:
-    with open("Connections.txt","r") as Connections:
-        for line in Connections:
-            SlotsMM.insert(-1,"Connecton "+ line.strip())
+    with open("Connections.json","r") as Connections:
+        json_str = json.load(Connections)
+        for I in reversed(json_str):
+            SlotsMM.insert(0, I)
+
         for I in SlotsMM:
             if I == "add new Connection":
                 pass
@@ -53,18 +71,37 @@ try:
         print(SlotsMM)
         print(MacAdresses)
 except FileNotFoundError:
-    print("Connections.txt does not exist creating new one!")
-    with open("Connections.txt", "x"):
-        pass
+    print("Connections.json does not exist creating new one!")
+    with open("Connections.json", "w") as Connections:
+        json.dump(["1", "2", "3"], Connections)
+
 
 previous_button_state = GPIO.input(buttonPin)
 
-while 1 == 1 :
-    if MenuDeph == 0:
-        time.sleep(0.01)
-        button_state = GPIO.input(buttonPin)
-        if button_state != previous_button_state :
-           previous_button_state = button_state
-           if button_state == GPIO.HIGH :
-               print("Released")
-        lcd.write_string('Placeholder!')
+def puttonPress():
+    global MenuIndex
+    button_state = GPIO.input(buttonPin)
+    if button_state != previous_button_state:
+        previous_button_state = button_state
+        if button_state == GPIO.HIGH:
+            print("Pressed")
+            return MenuIndex
+
+def Cursor(CursorPrPos):
+    global CursorPos
+    lcd.cursor_pos = (CursorPos, 0)
+    lcd.write_string(">")
+    lcd.cursor_pos = (CursorPrPos, 0)
+    lcd.write_string(" ")
+
+def ResetCursor():
+    global CursorPos
+    CursorPrPos = CursorPos
+    CursorPos = 0
+    Cursor(CursorPrPos)
+
+lcd.clear()
+Cursor(1)
+
+while True:
+    pass
