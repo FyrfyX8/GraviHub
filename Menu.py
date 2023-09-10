@@ -86,10 +86,12 @@ try:
                 MacAdresses.insert(0,"none")
         print(SlotsMM)
         print(MacAdresses)
+        Connections.close()
 except FileNotFoundError:
     print("Connections.json does not exist creating new one!")
     with open("Connections.json", "w") as Connections:
         json.dump(["Connection1", "Connection2", "Connection3"], Connections)
+        Connections.close()
 
 
 previous_button_state = GPIO.input(buttonPin)
@@ -111,7 +113,6 @@ def MenuLenght(MenuType):
     global MenuMaxIndex, MenuMaxPos
     MenuMaxIndex = len(MenuType) - 1
     MenuMaxPos = MenuMaxIndex - 3
-    print("Menu Lenght: ", MenuMaxIndex,", Max Pos: ", MenuMaxPos)
 
 def Menu():
     global MenuDeph, SlotsCM, SlotsMM, MenuPos
@@ -124,13 +125,11 @@ def Menu():
     MenuLenght(CurrentSlots)
     CurrentIndex = MenuPos
     CurrentRow = 0
-    lcd.clear()
     for i in range(4):
         lcd.cursor_pos = (CurrentRow, 1)
         CurrentRow += 1
-        lcd.write_string(CurrentSlots[CurrentIndex])
+        lcd.write_string(CurrentSlots[CurrentIndex]+ " "*(19 -len (CurrentSlots[CurrentIndex])))
         CurrentIndex += 1
-    Cursor(0)
 
 lcd.clear()
 Cursor(1)
