@@ -162,21 +162,23 @@ def ResetMenu():
 
 
 async def SetMac():
+    global MacAdresses, MenuMMIndex, Wait
     async def Disconnect():
+        global Wait
         lcd.clear()
         lcd.cursor_pos = (1, 3)
         lcd.write_string("Disconnecting!")
         if await bridge.disconnect(timeout=25):
-            pass
-
+            ResetMenu()
+            Wait = False
+            loop.close()
         else:
             await Disconnect()
     try:
-        global MacAdresses, MenuMMIndex, Wait
         lcd.clear()
         lcd.cursor_pos = (1, 0)
         lcd.write_string("Connecting To Bridge")
-        if await bridge.connect(timeout=2):
+        if await bridge.connect(timeout=20):
             lcd.cursor_pos = (1, 0)
             MacAdress = bridge.get_address()
             lcd.write_string("Connectet To Bridge!")
@@ -191,14 +193,13 @@ async def SetMac():
             lcd.cursor_pos = (1, 0)
             lcd.write_string("No Connection found!")
             await asyncio.sleep(2)
+            ResetMenu()
+            Wait = False
+            loop.close()
     except Exception:
-        lcd.cursor_pos = (1, 0)
-        lcd.write_string("No Connection found!")
-        await asyncio.sleep(2)
-    finally:
-        Wait = False
-        ResetMenu()
-        loop.close()
+        pass
+
+
 def RemoveMac():
     global MacAdresses, MenuMMIndex
     lcd.clear()
