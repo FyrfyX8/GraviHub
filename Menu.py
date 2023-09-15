@@ -179,7 +179,7 @@ async def SetMac():
         if await bridge.connect(timeout=2):
             lcd.cursor_pos = (1, 0)
             MacAdress = bridge.get_address()
-            lcd.write_string("Connectet To Bridge!\r\nMac{0}".format(MacAdress))
+            lcd.write_string("Connectet To Bridge!")
             del MacAdresses[MenuMMIndex]
             MacAdresses.insert(MenuMMIndex, MacAdress)
             with open("Connections.json", "w") as Connections:
@@ -190,6 +190,7 @@ async def SetMac():
         else:
             lcd.cursor_pos = (1, 0)
             lcd.write_string("No Connection found!")
+            await asyncio.sleep(2)
     except Exception:
         lcd.cursor_pos = (1, 0)
         lcd.write_string("No Connection found!")
