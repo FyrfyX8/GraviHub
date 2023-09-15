@@ -128,6 +128,8 @@ def Menu():
             lcd.cursor_pos = (CurrentRow, 1)
             if len(CurrentSlots[CurrentIndex]) >= 17:
                 lcd.write_string(slice(CurrentSlots[CurrentIndex], 0, 17))
+            elif MenuDeph == 1 and CurrentIndex == 2 and MacAdresses[MenuMMIndex] != "none":
+                lcd.write_string("Del Mac-Adress" + " " * (17 - len("Del Mac-Adress")))
             else:
                 lcd.write_string(CurrentSlots[CurrentIndex] + " " * (17 - len(CurrentSlots[CurrentIndex])))
             if MenuDeph == 0:
