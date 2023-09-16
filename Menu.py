@@ -19,6 +19,7 @@ MenuMaxIndex = 0
 MenuPos = 0
 MenuMaxPos = 0
 MenuDeph = 0
+FMenuDeph = 2
 
 ConfScripts = Path("/home/fnorb/GraviHub/Scripts")
 CurrentPath = ConfScripts
@@ -288,7 +289,7 @@ def RemoveMac():
 
 
 def buttonPress(arg):
-    global MenuDeph, MenuIndex, MenuMaxIndex, MacAdresses, MenuMMIndex, RotateEnabled, ButtonEnabled, Wait
+    global MenuDeph, FMenuDeph, MenuIndex, MenuMaxIndex, MacAdresses, MenuMMIndex, RotateEnabled, ButtonEnabled, Wait
     if ButtonEnabled and Wait:
         MenuPrDeph = MenuDeph
 
@@ -303,7 +304,7 @@ def buttonPress(arg):
         if MenuIndex == 0:
             MenuDeph = 0
         elif MenuIndex == 1:
-            MenuDeph = 2
+            MenuDeph = FMenuDeph
         elif MenuIndex == 2:
             if MacAdresses[MenuMMIndex] == "none":
                 asyncio.run_coroutine_threadsafe(SetMac(), loop)
@@ -315,6 +316,7 @@ def buttonPress(arg):
     # FileMenu
     elif MenuDeph >= 2:
         if MenuIndex == 0:
+            FMenuDeph = MenuDeph
             MenuDeph = 1
         else:
             FMN()
