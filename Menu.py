@@ -385,4 +385,3 @@ if __name__ == "__main__":
         lcd.close(clear=True)
         GPIO.cleanup()
         loop.stop()
-
