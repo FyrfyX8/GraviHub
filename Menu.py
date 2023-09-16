@@ -5,6 +5,7 @@ import asyncio
 from gravitraxconnect import gravitrax_bridge as gb
 from encoder import Encoder
 import json
+from pathlib import Path
 
 lcd = CharLCD(i2c_expander="PCF8574", address=0x27, port=1, cols=20, rows=4, dotsize=8)
 GPIO.setmode(GPIO.BCM)
@@ -19,15 +20,26 @@ MenuPos = 0
 MenuMaxPos = 0
 MenuDeph = 0
 
+ConfScripts = Path("/home/fnorb/GraviHub/Scripts")
+CurrentPath = ConfScripts
+ConnectionPath = Path("/home/fnorb/GraviHub/Connections.json")
+
 SlotsMM = ["Connection1", "Connection2", "Connection3", "Connection4", "Connection5", "Connection6"]
 MacAdresses = []
 Scripts = ["none", "none", "none", "none", "none", "none"]
 SlotsCM = ["Main Menu", "Start Script", "Set Mac-Adress",]
-SlotsFM = ["Back"]
+SlotsFM = ["Connection Menu"]
 
 ButtonEnabled = True
 RotateEnabled = True
 Wait = True
+
+one = asyncio.Event
+two = asyncio.Event
+tree = asyncio.Event
+four = asyncio.Event
+five = asyncio.Event
+six = asyncio.Event
 
 bridge = gb.Bridge()
 
@@ -73,17 +85,27 @@ skript_running = (
     0b11110,
     0b00000
 )
+folder_char = (
+	0b00000,
+	0b11100,
+	0b11111,
+	0b10001,
+	0b10001,
+	0b11111,
+	0b00000,
+	0b00000
+)
 
 
 def ReadMA():
-    global MacAdresses
+    global MacAdresses, ConfPath
     try:
-        with open("Connections.json", "r") as Connections:
+        with ConnectionPath.open("r") as Connections:
             MacAdresses = json.load(Connections)
         print(MacAdresses)
         Connections.close()
     except FileNotFoundError:
-        with open("Connections.json", "w") as Connections:
+        with ConnectionPath.open("w") as Connections:
             MacAdresses = ["none", "none", "none", "none", "none", "none"]
             json.dump(MacAdresses, Connections)
             Connections.close()
@@ -103,6 +125,22 @@ def ResetCursor():
     CursorPos = 0
     Cursor(CursorPrPos)
 
+def GetFiles():
+    global SlotsFM, CurrentPath, MenuDeph
+    if MenuDeph == 2:
+        SlotsFM = ["Connection Menu"]
+    else:
+        SlotsFM = ["Connection Menu", "\x04.."]
+    for folder in CurrentPath.iterdir():
+        if folder.is_dir():
+            SlotsFM.append("\x04"+folder.name)
+    for file in CurrentPath.glob("*.py"):
+        SlotsFM.append(file.name)
+    print(SlotsFM)
+
+
+
+
 
 def MenuLenght(MenuType):
     global MenuMaxIndex, MenuMaxPos
@@ -111,12 +149,15 @@ def MenuLenght(MenuType):
 
 
 def Menu():
-    global MenuDeph, SlotsCM, SlotsMM, MenuPos, MenuMaxIndex, Scripts, MenuMMIndex
+    global MenuDeph, SlotsCM, SlotsMM, SlotsFM, MenuPos, MenuMaxIndex, Scripts, MenuMMIndex
     CurrentSlots = ["none", "none", "none", "none"]
     if MenuDeph == 0:
         CurrentSlots = SlotsMM
     elif MenuDeph == 1:
         CurrentSlots = SlotsCM
+    elif MenuDeph >= 2:
+        GetFiles()
+        CurrentSlots = SlotsFM
     MenuLenght(CurrentSlots)
     CurrentIndex = MenuPos
     CurrentRow = 0
@@ -124,24 +165,32 @@ def Menu():
         try:
             if MenuDeph == 1 and CurrentIndex == 3:
                 lcd.write_string(MacAdresses[MenuMMIndex])
-
             lcd.cursor_pos = (CurrentRow, 1)
-            if len(CurrentSlots[CurrentIndex]) >= 17:
-                lcd.write_string(slice(CurrentSlots[CurrentIndex], 0, 17))
+            if len(CurrentSlots[CurrentIndex]) >= 20 and MenuDeph >= 2:
+                lcd.write_string(slice(CurrentSlots[CurrentIndex], 0, 20))
+            elif len(CurrentSlots[CurrentIndex]) >= 16:
+                lcd.write_string(slice(CurrentSlots[CurrentIndex], 0, 16))
             elif MenuDeph == 1 and CurrentIndex == 2 and MacAdresses[MenuMMIndex] != "none":
-                lcd.write_string("Del Mac-Adress" + " " * (17 - len("Del Mac-Adress")))
+                lcd.write_string("Del Mac-Adress" + " " * (16 - len("Del Mac-Adress")))
             else:
-                lcd.write_string(CurrentSlots[CurrentIndex] + " " * (17 - len(CurrentSlots[CurrentIndex])))
+                lcd.write_string(CurrentSlots[CurrentIndex] + " " * (16 - len(CurrentSlots[CurrentIndex])))
             if MenuDeph == 0:
+                if MacAdresses[CurrentIndex] == "none":
+                    lcd.write_string(" ")
+                else:
+                    lcd.write_string("M")
                 if Scripts[CurrentIndex] == "none":
                     lcd.write_string("\x02\x00")
                 else:
                     lcd.write_string("\x03\x00")
             if MenuDeph == 1:
                 if CurrentIndex == 0:
-                    lcd.write_string(" \x01")
+                    lcd.write_string("  \x01")
                 else:
-                    lcd.write_string(" \x00")
+                    lcd.write_string("  \x00")
+            if MenuDeph >= 2:
+                if CurrentIndex == 0:
+                    lcd.write_string("  \x01")
 
             CurrentRow += 1
             CurrentIndex += 1
@@ -159,6 +208,27 @@ def ResetMenu():
     time.sleep(0.1)
     RotateEnabled = True
     ButtonEnabled = True
+
+def Script(ExecuteFile):
+    global MenuMMIndex, Scripts
+    del Scripts[MenuMMIndex]
+    Scripts.insert(MenuMMIndex, ExecuteFile)
+
+def FMN():
+    global MenuDeph, MenuIndex, CurrentPath, SlotsFM
+    if MenuDeph >= 3 and MenuIndex == 1:
+        MenuDeph -= 1
+        CurrentPath = CurrentPath.parent
+    else:
+        TempPath = CurrentPath / SlotsFM[MenuIndex].replace("\x04", "")
+        print(TempPath)
+        if TempPath.is_file():
+            # Script(TempPath)
+            print("File")
+        elif TempPath.is_dir():
+            CurrentPath = TempPath
+            MenuDeph += 1
+            print("Folder")
 
 
 async def SetMac():
@@ -184,7 +254,7 @@ async def SetMac():
             lcd.write_string("Connectet To Bridge!")
             del MacAdresses[MenuMMIndex]
             MacAdresses.insert(MenuMMIndex, MacAdress)
-            with open("Connections.json", "w") as Connections:
+            with ConnectionPath.open("w") as Connections:
                 json.dump(MacAdresses, Connections)
                 Connections.close()
             await asyncio.sleep(3)
@@ -207,7 +277,7 @@ def RemoveMac():
     lcd.write_string("Removing Mac")
     del MacAdresses[MenuMMIndex]
     MacAdresses.insert(MenuMMIndex, "none")
-    with open("Connections.json", "w") as Connections:
+    with ConnectionPath.open("w") as Connections:
         json.dump(MacAdresses, Connections)
         Connections.close()
     time.sleep(1)
@@ -219,18 +289,21 @@ def RemoveMac():
 
 def buttonPress(arg):
     global MenuDeph, MenuIndex, MenuMaxIndex, MacAdresses, MenuMMIndex, RotateEnabled, ButtonEnabled, Wait
-
     if ButtonEnabled and Wait:
         MenuPrDeph = MenuDeph
 
         ButtonEnabled = False
         RotateEnabled = False
+    # MainMenu
     if MenuDeph == 0:
         MenuMMIndex = MenuIndex
         MenuDeph = 1
+    # ConnectionMenu
     elif MenuDeph == 1:
         if MenuIndex == 0:
             MenuDeph = 0
+        elif MenuIndex == 1:
+            MenuDeph = 2
         elif MenuIndex == 2:
             if MacAdresses[MenuMMIndex] == "none":
                 asyncio.run_coroutine_threadsafe(SetMac(), loop)
@@ -239,6 +312,12 @@ def buttonPress(arg):
                 Wait = True
             elif MacAdresses[MenuMMIndex] != "none":
                 RemoveMac()
+    # FileMenu
+    elif MenuDeph >= 2:
+        if MenuIndex == 0:
+            MenuDeph = 1
+        else:
+            FMN()
 
     if MenuDeph != MenuPrDeph:
         ResetMenu()
@@ -291,6 +370,7 @@ if __name__ == "__main__":
         lcd.create_char(1, back_arrow)
         lcd.create_char(2, no_skript)
         lcd.create_char(3, skript_running)
+        lcd.create_char(4, folder_char)
 
         lcd.clear()
         lcd.cursor_pos = (1, 0)
