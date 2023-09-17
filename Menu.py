@@ -6,6 +6,7 @@ from gravitraxconnect import gravitrax_bridge as gb
 from encoder import Encoder
 import json
 from pathlib import Path
+import importlib.util
 
 lcd = CharLCD(i2c_expander="PCF8574", address=0x27, port=1, cols=20, rows=4, dotsize=8)
 GPIO.setmode(GPIO.BCM)
@@ -34,13 +35,14 @@ SlotsFM = ["Connection Menu"]
 ButtonEnabled = True
 RotateEnabled = True
 Wait = True
+Connection = False
 
-one = asyncio.Event
-two = asyncio.Event
-tree = asyncio.Event
-four = asyncio.Event
-five = asyncio.Event
-six = asyncio.Event
+one = asyncio.Event()
+two = asyncio.Event()
+tree = asyncio.Event()
+four = asyncio.Event()
+five = asyncio.Event()
+six = asyncio.Event()
 
 bridge = gb.Bridge()
 
@@ -156,6 +158,19 @@ def Menu():
         CurrentSlots = SlotsMM
     elif MenuDeph == 1:
         CurrentSlots = SlotsCM
+        if Scripts[MenuMMIndex] != "none":
+            del CurrentSlots[1]
+            CurrentSlots.insert(1, "Stop Script     {}".format(Scripts[MenuMMIndex]))
+        else:
+            del CurrentSlots[1]
+            CurrentSlots.insert(1, "Start Script")
+        if MacAdresses[MenuMMIndex] != "none":
+            del CurrentSlots[2]
+            CurrentSlots.insert(2, "Del Mac-Adress")
+        else:
+            del CurrentSlots[2]
+            CurrentSlots.insert(2, "Set Mac-Adress")
+
     elif MenuDeph >= 2:
         GetFiles()
         CurrentSlots = SlotsFM
@@ -168,11 +183,9 @@ def Menu():
                 lcd.write_string(MacAdresses[MenuMMIndex])
             lcd.cursor_pos = (CurrentRow, 1)
             if len(CurrentSlots[CurrentIndex]) >= 20 and MenuDeph >= 2:
-                lcd.write_string(slice(CurrentSlots[CurrentIndex], 0, 20))
+                lcd.write_string(CurrentSlots[CurrentIndex][0: 20])
             elif len(CurrentSlots[CurrentIndex]) >= 16:
-                lcd.write_string(slice(CurrentSlots[CurrentIndex], 0, 16))
-            elif MenuDeph == 1 and CurrentIndex == 2 and MacAdresses[MenuMMIndex] != "none":
-                lcd.write_string("Del Mac-Adress" + " " * (16 - len("Del Mac-Adress")))
+                lcd.write_string(CurrentSlots[CurrentIndex][0: 16])
             else:
                 lcd.write_string(CurrentSlots[CurrentIndex] + " " * (16 - len(CurrentSlots[CurrentIndex])))
             if MenuDeph == 0:
@@ -209,11 +222,116 @@ def ResetMenu():
     time.sleep(0.1)
     RotateEnabled = True
     ButtonEnabled = True
+async def Run(spec, Module, MacAdress):
+    global MenuMMIndex, Wait, Connection
+    spec.loader.exec_module(Module)
 
-def Script(ExecuteFile):
-    global MenuMMIndex, Scripts
-    del Scripts[MenuMMIndex]
-    Scripts.insert(MenuMMIndex, ExecuteFile)
+    async def Disconnect():
+        global Wait
+        lcd.clear()
+        lcd.cursor_pos = (1, 3)
+        lcd.write_string("Disconnecting!")
+        if await bridge.disconnect(timeout=25):
+            ResetMenu()
+            Wait = False
+            loop.close()
+        else:
+            await Disconnect()
+    async def main():
+        await Module.setup()
+        global Wait
+        if await bridge.notification_enable(Module.notification_callback):
+            print("callback Enabled")
+        if MenuMMIndex == 0:
+            await one.wait()
+        elif MenuMMIndex == 1:
+            await two.wait()
+        elif MenuMMIndex == 2:
+            await tree.wait()
+        elif MenuMMIndex == 3:
+            await four.wait()
+        elif MenuMMIndex == 4:
+            await five.wait()
+        elif MenuMMIndex == 5:
+            await six.wait()
+        await Disconnect()
+    try:
+        if MacAdress != "none":
+            lcd.clear()
+            lcd.cursor_pos = (1, 0)
+            lcd.write_string("Connecting to\r\n   {}".format(MacAdress))
+            if await bridge.connect(name_or_addr=MacAdress, timeout=25, by_name=False):
+                lcd.clear()
+                lcd.cursor_pos = (1, 0)
+                lcd.write_string("Connected to Bridge!")
+                await asyncio.sleep(2)
+                Connection = True
+                Wait = False
+                await main()
+            else:
+                lcd.clear()
+                lcd.cursor_pos = (1, 0)
+                lcd.write_string("No Connection found!")
+                await asyncio.sleep(2)
+                Wait = False
+
+        else:
+            lcd.clear()
+            lcd.cursor_pos = (1, 0)
+            lcd.write_string("Connecting to Bridge")
+            if await bridge.connect(timeout=25,):
+                lcd.clear()
+                lcd.cursor_pos = (1, 0)
+                lcd.write_string("Connected to Bridge!")
+                await asyncio.sleep(2)
+                Connection = True
+                Wait = False
+                await main()
+            else:
+                lcd.cursor_pos = (1, 0)
+                lcd.write_string("No Connection found!")
+                await asyncio.sleep(2)
+                Wait = False
+        if Connection == False:
+            loop.close()
+    except Exception as error:
+        print(error)
+        loop.close()
+
+def Start(ExecuteFile):
+    global MenuMMIndex, Scripts, MacAdresses, MenuDeph, FMenuDeph, Wait
+    spec = importlib.util.spec_from_file_location(ExecuteFile.name[:-3], ExecuteFile)
+    Module = importlib.util.module_from_spec(spec)
+    asyncio.run_coroutine_threadsafe(Run(spec, Module, MacAdresses[MenuMMIndex]), loop)
+    while Wait:
+        time.sleep(0.01)
+    Wait = True
+    if Connection:
+        del Scripts[MenuMMIndex]
+        Scripts.insert(MenuMMIndex, ExecuteFile.name)
+        FMenuDeph = MenuDeph
+        MenuDeph = 1
+    else:
+        pass
+    ResetMenu()
+def Stop():
+    global MenuMMIndex, Wait
+    if MenuMMIndex == 0:
+        one.set()
+    elif MenuMMIndex == 1:
+        two.set()
+    elif MenuMMIndex == 2:
+        tree.set()
+    elif MenuMMIndex == 3:
+        four.set()
+    elif MenuMMIndex == 4:
+        five.set()
+    elif MenuMMIndex == 5:
+        six.set()
+    while Wait:
+        time.sleep(0.01)
+    Wait = True
+    ResetMenu()
 
 def FMN():
     global MenuDeph, MenuIndex, CurrentPath, SlotsFM
@@ -224,7 +342,7 @@ def FMN():
         TempPath = CurrentPath / SlotsFM[MenuIndex].replace("\x04", "")
         print(TempPath)
         if TempPath.is_file():
-            # Script(TempPath)
+            Start(TempPath)
             print("File")
         elif TempPath.is_dir():
             CurrentPath = TempPath
@@ -249,7 +367,7 @@ async def SetMac():
         lcd.clear()
         lcd.cursor_pos = (1, 0)
         lcd.write_string("Connecting To Bridge")
-        if await bridge.connect(timeout=20):
+        if await bridge.connect(timeout=25):
             lcd.cursor_pos = (1, 0)
             MacAdress = bridge.get_address()
             lcd.write_string("Connectet To Bridge!")
@@ -267,10 +385,9 @@ async def SetMac():
             ResetMenu()
             Wait = False
             loop.close()
-    except Exception:
-        pass
-
-
+    except Exception as error:
+        print(error)
+        loop.close()
 def RemoveMac():
     global MacAdresses, MenuMMIndex
     lcd.clear()
@@ -289,7 +406,7 @@ def RemoveMac():
 
 
 def buttonPress(arg):
-    global MenuDeph, FMenuDeph, MenuIndex, MenuMaxIndex, MacAdresses, MenuMMIndex, RotateEnabled, ButtonEnabled, Wait
+    global MenuDeph, FMenuDeph, MenuIndex, MenuMaxIndex, MacAdresses, MenuMMIndex, RotateEnabled, ButtonEnabled, Wait, Scripts
     if ButtonEnabled and Wait:
         MenuPrDeph = MenuDeph
 
@@ -304,7 +421,10 @@ def buttonPress(arg):
         if MenuIndex == 0:
             MenuDeph = 0
         elif MenuIndex == 1:
-            MenuDeph = FMenuDeph
+            if Scripts[MenuMMIndex] != "none":
+                Stop()
+            else:
+                MenuDeph = FMenuDeph
         elif MenuIndex == 2:
             if MacAdresses[MenuMMIndex] == "none":
                 asyncio.run_coroutine_threadsafe(SetMac(), loop)
@@ -377,6 +497,7 @@ if __name__ == "__main__":
         lcd.clear()
         lcd.cursor_pos = (1, 0)
         lcd.write_string('Welcome to GraviHub!')
+        lcd.close()
         ReadMA()
         time.sleep(3)
         lcd.clear()
