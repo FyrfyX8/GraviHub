@@ -20,7 +20,9 @@ MenuMaxIndex = 0
 MenuPos = 0
 MenuMaxPos = 0
 MenuDeph = 0
+MenuPrDeph = 0
 FMenuDeph = 2
+
 
 ConfScripts = Path("/home/fnorb/GraviHub/Scripts")
 CurrentPath = ConfScripts
@@ -31,20 +33,16 @@ MacAdresses = []
 Scripts = ["none", "none", "none", "none", "none", "none"]
 SlotsCM = ["Main Menu", "Start Script", "Set Mac-Adress",]
 SlotsFM = ["Connection Menu"]
+CurrentSlots = SlotsMM
 
 ButtonEnabled = True
 RotateEnabled = True
 Wait = True
 Connection = False
-
-one = asyncio.Event()
-two = asyncio.Event()
-tree = asyncio.Event()
-four = asyncio.Event()
-five = asyncio.Event()
-six = asyncio.Event()
+DisEvent = False
 
 bridge = gb.Bridge()
+bridges = [gb.Bridge(), gb.Bridge(), gb.Bridge(), gb.Bridge(), gb.Bridge(), gb.Bridge()]
 
 
 # CustomCarakters
@@ -89,14 +87,14 @@ skript_running = (
     0b00000
 )
 folder_char = (
-	0b00000,
-	0b11100,
-	0b11111,
-	0b10001,
-	0b10001,
-	0b11111,
-	0b00000,
-	0b00000
+    0b00000,
+    0b11100,
+    0b11111,
+    0b10001,
+    0b10001,
+    0b11111,
+    0b00000,
+    0b00000
 )
 
 
@@ -152,7 +150,7 @@ def MenuLenght(MenuType):
 
 
 def Menu():
-    global MenuDeph, SlotsCM, SlotsMM, SlotsFM, MenuPos, MenuMaxIndex, Scripts, MenuMMIndex
+    global MenuDeph, SlotsCM, SlotsMM, SlotsFM, MenuPos, MenuMaxIndex, Scripts, MenuMMIndex, CurrentSlots
     CurrentSlots = ["none", "none", "none", "none"]
     if MenuDeph == 0:
         CurrentSlots = SlotsMM
@@ -223,44 +221,42 @@ def ResetMenu():
     RotateEnabled = True
     ButtonEnabled = True
 async def Run(spec, Module, MacAdress):
-    global MenuMMIndex, Wait, Connection
+    global MenuMMIndex, Wait, Connection, bridges
     spec.loader.exec_module(Module)
+
 
     async def Disconnect():
         global Wait
         lcd.clear()
         lcd.cursor_pos = (1, 3)
         lcd.write_string("Disconnecting!")
-        if await bridge.disconnect(timeout=25):
-            ResetMenu()
+        await Module.GBshutdown(bridges[MenuMMIndex])
+        if await bridges[MenuMMIndex].disconnect(timeout=25):
             Wait = False
-            loop.close()
         else:
             await Disconnect()
     async def main():
-        await Module.setup()
-        global Wait
-        if await bridge.notification_enable(Module.notification_callback):
+        global Wait, DisEvent
+        index = MenuMMIndex
+        await Module.GBsetup(bridges[MenuMMIndex])
+        if await bridges[MenuMMIndex].notification_enable(Module.notification_callback):
             print("callback Enabled")
-        if MenuMMIndex == 0:
-            await one.wait()
-        elif MenuMMIndex == 1:
-            await two.wait()
-        elif MenuMMIndex == 2:
-            await tree.wait()
-        elif MenuMMIndex == 3:
-            await four.wait()
-        elif MenuMMIndex == 4:
-            await five.wait()
-        elif MenuMMIndex == 5:
-            await six.wait()
+        while True:
+            if DisEvent and index == MenuMMIndex:
+                print("Yes")
+                break
+            else:
+                await asyncio.sleep(0.01)
+        DisEvent = False
+        print("catch")
         await Disconnect()
+
     try:
         if MacAdress != "none":
             lcd.clear()
             lcd.cursor_pos = (1, 0)
             lcd.write_string("Connecting to\r\n   {}".format(MacAdress))
-            if await bridge.connect(name_or_addr=MacAdress, timeout=25, by_name=False):
+            if await bridges[MenuMMIndex].connect(name_or_addr=MacAdress, timeout=25, by_name=False):
                 lcd.clear()
                 lcd.cursor_pos = (1, 0)
                 lcd.write_string("Connected to Bridge!")
@@ -279,7 +275,7 @@ async def Run(spec, Module, MacAdress):
             lcd.clear()
             lcd.cursor_pos = (1, 0)
             lcd.write_string("Connecting to Bridge")
-            if await bridge.connect(timeout=25,):
+            if await bridges[MenuMMIndex].connect(timeout=25,):
                 lcd.clear()
                 lcd.cursor_pos = (1, 0)
                 lcd.write_string("Connected to Bridge!")
@@ -292,14 +288,14 @@ async def Run(spec, Module, MacAdress):
                 lcd.write_string("No Connection found!")
                 await asyncio.sleep(2)
                 Wait = False
-        if Connection == False:
-            loop.close()
+
     except Exception as error:
         print(error)
-        loop.close()
+        Wait = False
+
 
 def Start(ExecuteFile):
-    global MenuMMIndex, Scripts, MacAdresses, MenuDeph, FMenuDeph, Wait
+    global MenuMMIndex, Scripts, MacAdresses, MenuDeph, FMenuDeph, Wait, Connection
     spec = importlib.util.spec_from_file_location(ExecuteFile.name[:-3], ExecuteFile)
     Module = importlib.util.module_from_spec(spec)
     asyncio.run_coroutine_threadsafe(Run(spec, Module, MacAdresses[MenuMMIndex]), loop)
@@ -312,25 +308,22 @@ def Start(ExecuteFile):
         FMenuDeph = MenuDeph
         MenuDeph = 1
     else:
-        pass
-    ResetMenu()
+        ResetMenu()
+    Connection = False
+    print(Scripts)
+
 def Stop():
-    global MenuMMIndex, Wait
-    if MenuMMIndex == 0:
-        one.set()
-    elif MenuMMIndex == 1:
-        two.set()
-    elif MenuMMIndex == 2:
-        tree.set()
-    elif MenuMMIndex == 3:
-        four.set()
-    elif MenuMMIndex == 4:
-        five.set()
-    elif MenuMMIndex == 5:
-        six.set()
+    global MenuMMIndex, Wait, Scripts, DisEvent
+
+    DisEvent = True
+    print("catch2")
     while Wait:
         time.sleep(0.01)
     Wait = True
+
+    print("hi")
+    del Scripts[MenuMMIndex]
+    Scripts.insert(MenuMMIndex, "none")
     ResetMenu()
 
 def FMN():
@@ -360,7 +353,6 @@ async def SetMac():
         if await bridge.disconnect(timeout=25):
             ResetMenu()
             Wait = False
-            loop.close()
         else:
             await Disconnect()
     try:
@@ -384,10 +376,8 @@ async def SetMac():
             await asyncio.sleep(2)
             ResetMenu()
             Wait = False
-            loop.close()
     except Exception as error:
-        print(error)
-        loop.close()
+        print(repr(error))
 def RemoveMac():
     global MacAdresses, MenuMMIndex
     lcd.clear()
@@ -406,7 +396,8 @@ def RemoveMac():
 
 
 def buttonPress(arg):
-    global MenuDeph, FMenuDeph, MenuIndex, MenuMaxIndex, MacAdresses, MenuMMIndex, RotateEnabled, ButtonEnabled, Wait, Scripts
+    global MenuDeph, FMenuDeph, MenuIndex, MenuMaxIndex, MacAdresses, MenuMMIndex, RotateEnabled, ButtonEnabled, Wait, Scripts, MenuPrDeph
+
     if ButtonEnabled and Wait:
         MenuPrDeph = MenuDeph
 
@@ -451,6 +442,7 @@ def buttonPress(arg):
 
 def valueChanged(value, direction):
     global MenuPos, CursorPos, MenuMaxPos, MenuIndex
+    MenuPrIndex = MenuIndex
     CursorPrPos = CursorPos
     MenuPrPos = MenuPos
     if RotateEnabled and Wait:
@@ -486,7 +478,7 @@ if __name__ == "__main__":
         e1 = Encoder(4, 17, valueChanged)
 
         GPIO.setup(buttonPin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-        GPIO.add_event_detect(buttonPin, GPIO.RISING, callback=buttonPress, bouncetime=1200)
+        GPIO.add_event_detect(buttonPin, GPIO.RISING, callback=buttonPress, bouncetime=200)
 
         lcd.create_char(0, arrow)
         lcd.create_char(1, back_arrow)
