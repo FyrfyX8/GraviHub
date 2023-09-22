@@ -40,7 +40,8 @@ RotateEnabled = True
 Wait = True
 Connection = False
 DisEvent = False
-
+RollingEvent = False
+RollingFlag = True
 bridge = gb.Bridge()
 bridges = [gb.Bridge(), gb.Bridge(), gb.Bridge(), gb.Bridge(), gb.Bridge(), gb.Bridge()]
 
@@ -133,7 +134,7 @@ def GetFiles():
     else:
         SlotsFM = ["Connection Menu", "\x04.."]
     for folder in CurrentPath.iterdir():
-        if folder.is_dir():
+        if folder.is_dir() and not folder.name.startswith("__"):
             SlotsFM.append("\x04"+folder.name)
     for file in CurrentPath.glob("*.py"):
         SlotsFM.append(file.name)
@@ -158,7 +159,7 @@ def Menu():
         CurrentSlots = SlotsCM
         if Scripts[MenuMMIndex] != "none":
             del CurrentSlots[1]
-            CurrentSlots.insert(1, "Stop Script     {}".format(Scripts[MenuMMIndex]))
+            CurrentSlots.insert(1, "Stop Script       {}".format(Scripts[MenuMMIndex]))
         else:
             del CurrentSlots[1]
             CurrentSlots.insert(1, "Start Script")
@@ -180,10 +181,12 @@ def Menu():
             if MenuDeph == 1 and CurrentIndex == 3:
                 lcd.write_string(MacAdresses[MenuMMIndex])
             lcd.cursor_pos = (CurrentRow, 1)
-            if len(CurrentSlots[CurrentIndex]) >= 20 and MenuDeph >= 2:
-                lcd.write_string(CurrentSlots[CurrentIndex][0: 20])
+            if len(CurrentSlots[CurrentIndex]) >= 19 and MenuDeph >= 2:
+                lcd.write_string(CurrentSlots[CurrentIndex][0: 19])
             elif len(CurrentSlots[CurrentIndex]) >= 16:
                 lcd.write_string(CurrentSlots[CurrentIndex][0: 16])
+            elif MenuDeph >= 2:
+                lcd.write_string(CurrentSlots[CurrentIndex] + " " * (18 - len(CurrentSlots[CurrentIndex])))
             else:
                 lcd.write_string(CurrentSlots[CurrentIndex] + " " * (16 - len(CurrentSlots[CurrentIndex])))
             if MenuDeph == 0:
@@ -202,7 +205,10 @@ def Menu():
                     lcd.write_string("  \x00")
             if MenuDeph >= 2:
                 if CurrentIndex == 0:
-                    lcd.write_string("  \x01")
+                    lcd.write_string("\x01")
+                else:
+                    lcd.write_string(" ")
+
 
             CurrentRow += 1
             CurrentIndex += 1
@@ -230,7 +236,10 @@ async def Run(spec, Module, MacAdress):
         lcd.clear()
         lcd.cursor_pos = (1, 3)
         lcd.write_string("Disconnecting!")
-        await Module.GBshutdown(bridges[MenuMMIndex])
+        try:
+            await Module.GBshutdown(bridges[MenuMMIndex])
+        except Exception as e:
+            print(e)
         if await bridges[MenuMMIndex].disconnect(timeout=25):
             Wait = False
         else:
@@ -238,7 +247,10 @@ async def Run(spec, Module, MacAdress):
     async def main():
         global Wait, DisEvent
         index = MenuMMIndex
-        await Module.GBsetup(bridges[MenuMMIndex])
+        try:
+            await Module.GBsetup(bridges[MenuMMIndex])
+        except Exception as e:
+            print(e)
         if await bridges[MenuMMIndex].notification_enable(Module.notification_callback):
             print("callback Enabled")
         while True:
@@ -355,6 +367,15 @@ async def SetMac():
             Wait = False
         else:
             await Disconnect()
+    if Scripts[MenuMMIndex] != "none":
+        lcd.clear()
+        lcd.cursor_pos = (1, 0)
+        lcd.write_string("Running cant set Mac")
+        await asyncio.sleep(1)
+        ResetMenu()
+        Wait = False
+        return
+
     try:
         lcd.clear()
         lcd.cursor_pos = (1, 0)
@@ -380,6 +401,13 @@ async def SetMac():
         print(repr(error))
 def RemoveMac():
     global MacAdresses, MenuMMIndex
+    if Scripts[MenuMMIndex] != "none":
+        lcd.clear()
+        lcd.cursor_pos = (1, 0)
+        lcd.write_string("Running cant del Mac")
+        time.sleep(1)
+        ResetMenu()
+        return
     lcd.clear()
     lcd.cursor_pos = (1, 4)
     lcd.write_string("Removing Mac")
@@ -394,12 +422,97 @@ def RemoveMac():
     lcd.write_string("Done!")
     ResetMenu()
 
+async def Rolling():
+    global MenuIndex, CurrentSlots, CursorPos, RollingEvent, Wait, RollingFlag
+
+    MenuPrIndex = MenuIndex
+    shift = 0
+    for times in range(100):
+        if MenuIndex != MenuPrIndex:
+            print("ah")
+            return
+        else:
+            await asyncio.sleep(0.01)
+    print("gag")
+    RollingEvent = True
+    if MenuDeph <= 1:
+        for i in range(len(CurrentSlots[MenuIndex]) - 17):
+            if not RollingEvent:
+                RollingFlag = False
+                return
+            lcd.cursor_pos = (CursorPos, 1)
+            lcd.write_string(CurrentSlots[MenuIndex][shift:shift + 18])
+            await asyncio.sleep(0.01)
+            shift += 1
+            for times in range(20):
+                if not RollingEvent:
+                    RollingFlag = False
+                    return
+                else:
+                    await asyncio.sleep(0.01)
+
+    elif CurrentSlots[MenuIndex].startswith("\x04"):
+        shift = 1
+        for i in range(len(CurrentSlots[MenuIndex]) - 18):
+            if not RollingEvent:
+                RollingFlag = False
+                return
+            lcd.cursor_pos = (CursorPos, 2)
+            lcd.write_string(CurrentSlots[MenuIndex][shift:shift + 18])
+            await asyncio.sleep(0.01)
+            shift += 1
+            for times in range(20):
+                if not RollingEvent:
+                    RollingFlag = False
+                    return
+                else:
+                    await asyncio.sleep(0.01)
+    else:
+        for i in range(len(CurrentSlots[MenuIndex]) - 18):
+            if not RollingEvent:
+                RollingFlag = False
+                return
+            lcd.cursor_pos = (CursorPos, 1)
+            lcd.write_string(CurrentSlots[MenuIndex][shift:shift + 19])
+            await asyncio.sleep(0.01)
+            shift += 1
+            for times in range(20):
+                if not RollingEvent:
+                    RollingFlag = False
+                    return
+                else:
+                    await asyncio.sleep(0.01)
+    while True:
+        if not RollingEvent:
+            RollingFlag = False
+            return
+        else:
+            await asyncio.sleep(0.01)
+
+def ResetRolling(index,row):
+    global RollingEvent, RollingFlag
+    RollingEvent = False
+    while RollingFlag:
+        time.sleep(0.01)
+    RollingFlag = True
+    lcd.cursor_pos = (row, 1)
+    if MenuDeph == 1:
+        lcd.write_string(CurrentSlots[index][0:16] + "  ")
+    else:
+        lcd.write_string(CurrentSlots[index][0:19])
+
+
 
 def buttonPress(arg):
-    global MenuDeph, FMenuDeph, MenuIndex, MenuMaxIndex, MacAdresses, MenuMMIndex, RotateEnabled, ButtonEnabled, Wait, Scripts, MenuPrDeph
+    global MenuDeph, FMenuDeph, MenuIndex, MenuMaxIndex, MacAdresses, MenuMMIndex, RotateEnabled, ButtonEnabled, Wait, Scripts, MenuPrDeph, RollingEvent, RollingFlag
 
     if ButtonEnabled and Wait:
         MenuPrDeph = MenuDeph
+        if RollingEvent:
+            RollingEvent = False
+            while RollingFlag:
+                time.sleep(0.01)
+            RollingFlag = True
 
         ButtonEnabled = False
         RotateEnabled = False
@@ -441,7 +554,7 @@ def buttonPress(arg):
 
 
 def valueChanged(value, direction):
-    global MenuPos, CursorPos, MenuMaxPos, MenuIndex
+    global MenuPos, CursorPos, MenuMaxPos, MenuIndex, RollingEvent
     MenuPrIndex = MenuIndex
     CursorPrPos = CursorPos
     MenuPrPos = MenuPos
@@ -463,11 +576,14 @@ def valueChanged(value, direction):
             CursorPos = 3
             if MenuPos != MenuMaxPos:
                 MenuPos += 1
+        if RollingEvent:
+            ResetRolling(MenuPrIndex, CursorPrPos)
         if CursorPos != CursorPrPos:
             Cursor(CursorPrPos)
         if MenuPos != MenuPrPos:
             Menu()
-
+        if MenuDeph <= 1 and len(CurrentSlots[MenuIndex]) >= 16 or MenuDeph >= 2 and len(CurrentSlots[MenuIndex]) >= 19:
+            asyncio.run_coroutine_threadsafe(Rolling(), loop)
         print(CursorPos, MenuIndex)
 
 
