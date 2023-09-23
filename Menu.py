@@ -31,9 +31,9 @@ CurrentPath = ConfScripts
 ConnectionPath = Path("/home/fnorb/GraviHub/Connections.json")
 
 SlotsMM = ["Connection1", "Connection2", "Connection3", "Connection4", "Connection5", "Connection6"]
-MacAdresses = []
+MacAddresses = []
 Scripts = ["none", "none", "none", "none", "none", "none"]
-SlotsCM = ["Main Menu", "Start Script", "Set Mac-Adress",]
+SlotsCM = ["Main Menu", "Start Script", "Set Mac-Address",]
 SlotsFM = ["Connection Menu"]
 CurrentSlots = SlotsMM
 
@@ -102,16 +102,15 @@ folder_char = (
 
 
 def ReadMA():
-    global MacAdresses, ConfPath
+    global MacAddresses, ConfPath
     try:
         with ConnectionPath.open("r") as Connections:
-            MacAdresses = json.load(Connections)
-        print(MacAdresses)
+            MacAddresses = json.load(Connections)
         Connections.close()
     except FileNotFoundError:
         with ConnectionPath.open("w") as Connections:
-            MacAdresses = ["none", "none", "none", "none", "none", "none"]
-            json.dump(MacAdresses, Connections)
+            MacAddresses = ["none", "none", "none", "none", "none", "none"]
+            json.dump(MacAddresses, Connections)
             Connections.close()
 
 
@@ -140,13 +139,12 @@ def GetFiles():
             SlotsFM.append("\x04"+folder.name)
     for file in CurrentPath.glob("*.py"):
         SlotsFM.append(file.name)
-    print(SlotsFM)
 
 
 
 
 
-def MenuLenght(MenuType):
+def MenuLength(MenuType):
     global MenuMaxIndex, MenuMaxPos
     MenuMaxIndex = len(MenuType) - 1
     MenuMaxPos = MenuMaxIndex - 3
@@ -161,27 +159,27 @@ def Menu():
         CurrentSlots = SlotsCM
         if Scripts[MenuMMIndex] != "none":
             del CurrentSlots[1]
-            CurrentSlots.insert(1, "Stop Script       {}".format(Scripts[MenuMMIndex]))
+            CurrentSlots.insert(1, f"Stop Script       {Scripts[MenuMMIndex]}")
         else:
             del CurrentSlots[1]
             CurrentSlots.insert(1, "Start Script")
-        if MacAdresses[MenuMMIndex] != "none":
+        if MacAddresses[MenuMMIndex] != "none":
             del CurrentSlots[2]
-            CurrentSlots.insert(2, "Del Mac-Adress")
+            CurrentSlots.insert(2, "Del Mac-Address")
         else:
             del CurrentSlots[2]
-            CurrentSlots.insert(2, "Set Mac-Adress")
+            CurrentSlots.insert(2, "Set Mac-Address")
 
     elif MenuDeph >= 2:
         GetFiles()
         CurrentSlots = SlotsFM
-    MenuLenght(CurrentSlots)
+    MenuLength(CurrentSlots)
     CurrentIndex = MenuPos
     CurrentRow = 0
     for i in range(4):
         try:
             if MenuDeph == 1 and CurrentIndex == 3:
-                lcd.write_string(MacAdresses[MenuMMIndex])
+                lcd.write_string(MacAddresses[MenuMMIndex])
             lcd.cursor_pos = (CurrentRow, 1)
             if len(CurrentSlots[CurrentIndex]) >= 19 and MenuDeph >= 2:
                 lcd.write_string(CurrentSlots[CurrentIndex][0: 19])
@@ -192,7 +190,7 @@ def Menu():
             else:
                 lcd.write_string(CurrentSlots[CurrentIndex] + " " * (16 - len(CurrentSlots[CurrentIndex])))
             if MenuDeph == 0:
-                if MacAdresses[CurrentIndex] == "none":
+                if MacAddresses[CurrentIndex] == "none":
                     lcd.write_string(" ")
                 else:
                     lcd.write_string("M")
@@ -228,11 +226,28 @@ def ResetMenu():
     time.sleep(0.1)
     RotateEnabled = True
     ButtonEnabled = True
-async def Run(spec, Module, MacAdress):
+
+
+async def Run(spec, Module, MacAddress):
     global MenuMMIndex, Wait, Connection, bridges
     spec.loader.exec_module(Module)
+    index = MenuMMIndex
 
-
+    def disconnect_callback(bridge: gb.Bridge, **kwargs):
+        global Wait, Scripts
+        if kwargs.get("user_disconnected"):
+            del Scripts[index]
+            Scripts.insert(index, "none")
+        else:
+            Wait = False
+            lcd.clear()
+            lcd.cursor_pos = (1, 0)
+            lcd.write_string(f"Connection{index} timeout!")
+            time.sleep(2)
+            del Scripts[index]
+            Scripts.insert(index, "none")
+            ResetMenu()
+            Wait = True
     async def Disconnect():
         global Wait
         lcd.clear()
@@ -248,29 +263,28 @@ async def Run(spec, Module, MacAdress):
             await Disconnect()
     async def main():
         global Wait, DisEvent
-        index = MenuMMIndex
+
         try:
             await Module.GBsetup(bridges[MenuMMIndex])
         except Exception as e:
             print(e)
         if await bridges[MenuMMIndex].notification_enable(Module.notification_callback):
-            print("callback Enabled")
+            pass
         while True:
             if DisEvent and index == MenuMMIndex:
-                print("Yes")
                 break
             else:
                 await asyncio.sleep(0.01)
         DisEvent = False
-        print("catch")
         await Disconnect()
 
     try:
-        if MacAdress != "none":
+        if MacAddress != "none":
             lcd.clear()
             lcd.cursor_pos = (1, 0)
-            lcd.write_string("Connecting to\r\n   {}".format(MacAdress))
-            if await bridges[MenuMMIndex].connect(name_or_addr=MacAdress, timeout=25, by_name=False):
+            lcd.write_string(f"Connecting to\r\n   {MacAddress}")
+            if await bridges[MenuMMIndex].connect(name_or_addr=MacAddress, timeout=25, by_name=False,
+                                                  dc_callback=disconnect_callback):
                 lcd.clear()
                 lcd.cursor_pos = (1, 0)
                 lcd.write_string("Connected to Bridge!")
@@ -289,7 +303,7 @@ async def Run(spec, Module, MacAdress):
             lcd.clear()
             lcd.cursor_pos = (1, 0)
             lcd.write_string("Connecting to Bridge")
-            if await bridges[MenuMMIndex].connect(timeout=25,):
+            if await bridges[MenuMMIndex].connect(timeout=25, dc_callback=disconnect_callback):
                 lcd.clear()
                 lcd.cursor_pos = (1, 0)
                 lcd.write_string("Connected to Bridge!")
@@ -303,16 +317,16 @@ async def Run(spec, Module, MacAdress):
                 await asyncio.sleep(2)
                 Wait = False
 
-    except Exception as error:
-        print(error)
+    except Exception as e:
+        print(e)
         Wait = False
 
 
 def Start(ExecuteFile):
-    global MenuMMIndex, Scripts, MacAdresses, MenuDeph, FMenuDeph, Wait, Connection
+    global MenuMMIndex, Scripts, MacAddresses, MenuDeph, FMenuDeph, Wait, Connection
     spec = importlib.util.spec_from_file_location(ExecuteFile.name[:-3], ExecuteFile)
     Module = importlib.util.module_from_spec(spec)
-    asyncio.run_coroutine_threadsafe(Run(spec, Module, MacAdresses[MenuMMIndex]), loop)
+    asyncio.run_coroutine_threadsafe(Run(spec, Module, MacAddresses[MenuMMIndex]), loop)
     while Wait:
         time.sleep(0.01)
     Wait = True
@@ -324,21 +338,17 @@ def Start(ExecuteFile):
     else:
         ResetMenu()
     Connection = False
-    print(Scripts)
+
 
 def Stop():
     global MenuMMIndex, Wait, Scripts, DisEvent
 
     DisEvent = True
-    print("catch2")
     while Wait:
         time.sleep(0.01)
     Wait = True
-
-    print("hi")
-    del Scripts[MenuMMIndex]
-    Scripts.insert(MenuMMIndex, "none")
     ResetMenu()
+
 
 def FMN():
     global MenuDeph, MenuIndex, CurrentPath, SlotsFM
@@ -347,18 +357,15 @@ def FMN():
         CurrentPath = CurrentPath.parent
     else:
         TempPath = CurrentPath / SlotsFM[MenuIndex].replace("\x04", "")
-        print(TempPath)
         if TempPath.is_file():
             Start(TempPath)
-            print("File")
         elif TempPath.is_dir():
             CurrentPath = TempPath
             MenuDeph += 1
-            print("Folder")
 
 
 async def SetMac():
-    global MacAdresses, MenuMMIndex, Wait
+    global MacAddresses, MenuMMIndex, Wait
     async def Disconnect():
         global Wait
         lcd.clear()
@@ -372,7 +379,7 @@ async def SetMac():
     if Scripts[MenuMMIndex] != "none":
         lcd.clear()
         lcd.cursor_pos = (1, 0)
-        lcd.write_string("Running cant set Mac")
+        lcd.write_string("Scipt is running,\r\n       can't set Mac")
         await asyncio.sleep(1)
         ResetMenu()
         Wait = False
@@ -384,12 +391,12 @@ async def SetMac():
         lcd.write_string("Connecting To Bridge")
         if await bridge.connect(timeout=25):
             lcd.cursor_pos = (1, 0)
-            MacAdress = bridge.get_address()
+            MacAddress = bridge.get_address()
             lcd.write_string("Connectet To Bridge!")
-            del MacAdresses[MenuMMIndex]
-            MacAdresses.insert(MenuMMIndex, MacAdress)
+            del MacAddresses[MenuMMIndex]
+            MacAddresses.insert(MenuMMIndex, MacAddress)
             with ConnectionPath.open("w") as Connections:
-                json.dump(MacAdresses, Connections)
+                json.dump(MacAddresses, Connections)
                 Connections.close()
             await asyncio.sleep(3)
             await Disconnect()
@@ -399,24 +406,26 @@ async def SetMac():
             await asyncio.sleep(2)
             ResetMenu()
             Wait = False
-    except Exception as error:
-        print(repr(error))
+    except Exception as e:
+        print(e)
+
+
 def RemoveMac():
-    global MacAdresses, MenuMMIndex
+    global MacAddresses, MenuMMIndex
     if Scripts[MenuMMIndex] != "none":
         lcd.clear()
         lcd.cursor_pos = (1, 0)
-        lcd.write_string("Running cant del Mac")
+        lcd.write_string("Scipt is running,\r\n       can't del Mac")
         time.sleep(1)
         ResetMenu()
         return
     lcd.clear()
     lcd.cursor_pos = (1, 4)
     lcd.write_string("Removing Mac")
-    del MacAdresses[MenuMMIndex]
-    MacAdresses.insert(MenuMMIndex, "none")
+    del MacAddresses[MenuMMIndex]
+    MacAddresses.insert(MenuMMIndex, "none")
     with ConnectionPath.open("w") as Connections:
-        json.dump(MacAdresses, Connections)
+        json.dump(MacAddresses, Connections)
         Connections.close()
     time.sleep(1)
     lcd.clear()
@@ -424,18 +433,17 @@ def RemoveMac():
     lcd.write_string("Done!")
     ResetMenu()
 
+
 async def Rolling():
     global MenuIndex, CurrentSlots, CursorPos, RollingEvent, Wait, RollingFlag
 
     MenuPrIndex = MenuIndex
     shift = 0
     for times in range(100):
-        if MenuIndex != MenuPrIndex:
-            print("ah")
+        if MenuIndex != MenuPrIndex or not ButtonEnabled:
             return
         else:
             await asyncio.sleep(0.01)
-    print("gag")
     RollingEvent = True
     if MenuDeph <= 1:
         for i in range(len(CurrentSlots[MenuIndex]) - 17):
@@ -491,7 +499,8 @@ async def Rolling():
         else:
             await asyncio.sleep(0.01)
 
-def ResetRolling(index,row):
+
+def ResetRolling(index, row):
     global RollingEvent, RollingFlag
     RollingEvent = False
     while RollingFlag:
@@ -504,17 +513,13 @@ def ResetRolling(index,row):
         lcd.write_string(CurrentSlots[index][0:19])
 
 
-
 def buttonPress(arg):
-    global MenuDeph, FMenuDeph, MenuIndex, MenuMaxIndex, MacAdresses, MenuMMIndex, RotateEnabled, ButtonEnabled, Wait, Scripts, MenuPrDeph, RollingEvent, RollingFlag
+    global MenuDeph, FMenuDeph, MenuIndex, MenuMaxIndex, MacAddresses, MenuMMIndex, RotateEnabled, ButtonEnabled, Wait, Scripts, MenuPrDeph, RollingEvent, RollingFlag
 
     if ButtonEnabled and Wait:
         MenuPrDeph = MenuDeph
         if RollingEvent:
-            RollingEvent = False
-            while RollingFlag:
-                time.sleep(0.01)
-            RollingFlag = True
+            ResetRolling(MenuIndex, CursorPos)
 
         ButtonEnabled = False
         RotateEnabled = False
@@ -532,12 +537,12 @@ def buttonPress(arg):
             else:
                 MenuDeph = FMenuDeph
         elif MenuIndex == 2:
-            if MacAdresses[MenuMMIndex] == "none":
+            if MacAddresses[MenuMMIndex] == "none":
                 asyncio.run_coroutine_threadsafe(SetMac(), loop)
                 while Wait:
                     time.sleep(0.01)
                 Wait = True
-            elif MacAdresses[MenuMMIndex] != "none":
+            elif MacAddresses[MenuMMIndex] != "none":
                 RemoveMac()
     # FileMenu
     elif MenuDeph >= 2:
@@ -586,7 +591,6 @@ def valueChanged(value, direction):
             Menu()
         if MenuDeph <= 1 and len(CurrentSlots[MenuIndex]) >= 16 or MenuDeph >= 2 and len(CurrentSlots[MenuIndex]) >= 19:
             asyncio.run_coroutine_threadsafe(Rolling(), loop)
-        print(CursorPos, MenuIndex)
 
 
 loop = asyncio.get_event_loop()
