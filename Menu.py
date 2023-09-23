@@ -106,7 +106,6 @@ def ReadMA():
     try:
         with ConnectionPath.open("r") as Connections:
             MacAddresses = json.load(Connections)
-        print(MacAddresses)
         Connections.close()
     except FileNotFoundError:
         with ConnectionPath.open("w") as Connections:
@@ -140,7 +139,6 @@ def GetFiles():
             SlotsFM.append("\x04"+folder.name)
     for file in CurrentPath.glob("*.py"):
         SlotsFM.append(file.name)
-    print(SlotsFM)
 
 
 
@@ -233,8 +231,23 @@ def ResetMenu():
 async def Run(spec, Module, MacAddress):
     global MenuMMIndex, Wait, Connection, bridges
     spec.loader.exec_module(Module)
+    index = MenuMMIndex
 
-
+    def disconnect_callback(bridge: gb.Bridge, **kwargs):
+        global Wait, Scripts
+        if kwargs.get("user_disconnected"):
+            del Scripts[index]
+            Scripts.insert(index, "none")
+        else:
+            Wait = False
+            lcd.clear()
+            lcd.cursor_pos = (1, 0)
+            lcd.write_string(f"Connection{index} timeout!")
+            time.sleep(2)
+            del Scripts[index]
+            Scripts.insert(index, "none")
+            ResetMenu()
+            Wait = True
     async def Disconnect():
         global Wait
         lcd.clear()
@@ -250,21 +263,19 @@ async def Run(spec, Module, MacAddress):
             await Disconnect()
     async def main():
         global Wait, DisEvent
-        index = MenuMMIndex
+
         try:
             await Module.GBsetup(bridges[MenuMMIndex])
         except Exception as e:
             print(e)
         if await bridges[MenuMMIndex].notification_enable(Module.notification_callback):
-            print("callback Enabled")
+            pass
         while True:
             if DisEvent and index == MenuMMIndex:
-                print("Yes")
                 break
             else:
                 await asyncio.sleep(0.01)
         DisEvent = False
-        print("catch")
         await Disconnect()
 
     try:
@@ -272,7 +283,8 @@ async def Run(spec, Module, MacAddress):
             lcd.clear()
             lcd.cursor_pos = (1, 0)
             lcd.write_string(f"Connecting to\r\n   {MacAddress}")
-            if await bridges[MenuMMIndex].connect(name_or_addr=MacAddress, timeout=25, by_name=False):
+            if await bridges[MenuMMIndex].connect(name_or_addr=MacAddress, timeout=25, by_name=False,
+                                                  dc_callback=disconnect_callback):
                 lcd.clear()
                 lcd.cursor_pos = (1, 0)
                 lcd.write_string("Connected to Bridge!")
@@ -291,7 +303,7 @@ async def Run(spec, Module, MacAddress):
             lcd.clear()
             lcd.cursor_pos = (1, 0)
             lcd.write_string("Connecting to Bridge")
-            if await bridges[MenuMMIndex].connect(timeout=25,):
+            if await bridges[MenuMMIndex].connect(timeout=25, dc_callback=disconnect_callback):
                 lcd.clear()
                 lcd.cursor_pos = (1, 0)
                 lcd.write_string("Connected to Bridge!")
@@ -305,8 +317,8 @@ async def Run(spec, Module, MacAddress):
                 await asyncio.sleep(2)
                 Wait = False
 
-    except Exception as error:
-        print(error)
+    except Exception as e:
+        print(e)
         Wait = False
 
 
@@ -326,21 +338,15 @@ def Start(ExecuteFile):
     else:
         ResetMenu()
     Connection = False
-    print(Scripts)
 
 
 def Stop():
     global MenuMMIndex, Wait, Scripts, DisEvent
 
     DisEvent = True
-    print("catch2")
     while Wait:
         time.sleep(0.01)
     Wait = True
-
-    print("hi")
-    del Scripts[MenuMMIndex]
-    Scripts.insert(MenuMMIndex, "none")
     ResetMenu()
 
 
@@ -351,14 +357,11 @@ def FMN():
         CurrentPath = CurrentPath.parent
     else:
         TempPath = CurrentPath / SlotsFM[MenuIndex].replace("\x04", "")
-        print(TempPath)
         if TempPath.is_file():
             Start(TempPath)
-            print("File")
         elif TempPath.is_dir():
             CurrentPath = TempPath
             MenuDeph += 1
-            print("Folder")
 
 
 async def SetMac():
@@ -376,7 +379,7 @@ async def SetMac():
     if Scripts[MenuMMIndex] != "none":
         lcd.clear()
         lcd.cursor_pos = (1, 0)
-        lcd.write_string("Running, can't set Mac")
+        lcd.write_string("Scipt is running,\r\n       can't set Mac")
         await asyncio.sleep(1)
         ResetMenu()
         Wait = False
@@ -403,8 +406,8 @@ async def SetMac():
             await asyncio.sleep(2)
             ResetMenu()
             Wait = False
-    except Exception as error:
-        print(repr(error))
+    except Exception as e:
+        print(e)
 
 
 def RemoveMac():
@@ -412,7 +415,7 @@ def RemoveMac():
     if Scripts[MenuMMIndex] != "none":
         lcd.clear()
         lcd.cursor_pos = (1, 0)
-        lcd.write_string("Running, can't del Mac")
+        lcd.write_string("Scipt is running,\r\n       can't del Mac")
         time.sleep(1)
         ResetMenu()
         return
@@ -437,12 +440,10 @@ async def Rolling():
     MenuPrIndex = MenuIndex
     shift = 0
     for times in range(100):
-        if MenuIndex != MenuPrIndex:
-            print("ah")
+        if MenuIndex != MenuPrIndex or not ButtonEnabled:
             return
         else:
             await asyncio.sleep(0.01)
-    print("gag")
     RollingEvent = True
     if MenuDeph <= 1:
         for i in range(len(CurrentSlots[MenuIndex]) - 17):
@@ -518,10 +519,7 @@ def buttonPress(arg):
     if ButtonEnabled and Wait:
         MenuPrDeph = MenuDeph
         if RollingEvent:
-            RollingEvent = False
-            while RollingFlag:
-                time.sleep(0.01)
-            RollingFlag = True
+            ResetRolling(MenuIndex, CursorPos)
 
         ButtonEnabled = False
         RotateEnabled = False
@@ -593,7 +591,6 @@ def valueChanged(value, direction):
             Menu()
         if MenuDeph <= 1 and len(CurrentSlots[MenuIndex]) >= 16 or MenuDeph >= 2 and len(CurrentSlots[MenuIndex]) >= 19:
             asyncio.run_coroutine_threadsafe(Rolling(), loop)
-        print(CursorPos, MenuIndex)
 
 
 loop = asyncio.get_event_loop()
