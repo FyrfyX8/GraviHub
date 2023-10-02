@@ -24,6 +24,7 @@ MenuMaxPos = 0
 MenuDeph = 0
 MenuPrDeph = 0
 FMenuDeph = 2
+BridgeCount = 0
 
 
 ConfScripts = Path("/home/fnorb/GraviHub/Scripts")
@@ -249,23 +250,26 @@ async def Run(spec, Module, MacAddress):
             ResetMenu()
             Wait = True
     async def Disconnect():
-        global Wait
+        global Wait, BridgeCount
         lcd.clear()
         lcd.cursor_pos = (1, 3)
         lcd.write_string("Disconnecting!")
         try:
-            await Module.GBshutdown(bridges[MenuMMIndex])
+            await Module.GBshutdown(bridges[MenuMMIndex], BridgeCount)
         except Exception as e:
             print(e)
         if await bridges[MenuMMIndex].disconnect(timeout=25):
             Wait = False
+            BridgeCount -= 1
         else:
             await Disconnect()
     async def main():
-        global Wait, DisEvent
+        global Wait, DisEvent, BridgeCount
+
+        BridgeCount += 1
 
         try:
-            await Module.GBsetup(bridges[MenuMMIndex])
+            await Module.GBsetup(bridges[MenuMMIndex], BridgeCount)
         except Exception as e:
             print(e)
         if await bridges[MenuMMIndex].notification_enable(Module.notification_callback):
