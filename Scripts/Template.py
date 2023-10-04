@@ -1,4 +1,3 @@
-import asyncio
 from gravitraxconnect import gravitrax_bridge as gb
 from gravitraxconnect import gravitrax_constants as gc
 

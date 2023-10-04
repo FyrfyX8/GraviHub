@@ -1,7 +1,7 @@
 from gravitraxconnect import gravitrax_bridge as gb
 from gravitraxconnect import gravitrax_constants as gc
 #this script sends Red signals from Trigger to Switch
-#or from Goal-trigger to Dome-Stater
+#or from Goal-trigger to Dome-Stater.
 
 async def notification_callback(bridge: gb.Bridge, **signal): # Code runs when receving a signal
     if signal.get("Header") == gc.MSG_DEFAULT_HEADER:

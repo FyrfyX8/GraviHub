@@ -1,7 +1,7 @@
 from gravitraxconnect import gravitrax_bridge as gb
 from gravitraxconnect import gravitrax_constants as gc
 import random
-#this script waits for blue signals and sends based on 50& Red or Green signals
+#this script waits for blue signals and sends based on 50& Red or Green signals.
 async def notification_callback(bridge: gb.Bridge, **signal): # Code runs when receving a signal
     if signal.get("Header") == gc.MSG_DEFAULT_HEADER:
         status = signal.get("Status")

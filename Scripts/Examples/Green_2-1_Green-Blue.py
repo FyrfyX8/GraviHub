@@ -2,7 +2,7 @@ from gravitraxconnect import gravitrax_bridge as gb
 from gravitraxconnect import gravitrax_constants as gc
 
 #this script waits for green signals and send each 3 signal as blue
-#all other as green
+#all other as green.
 
 Count = 0
 async def notification_callback(bridge: gb.Bridge, **signal): # Code runs when receving a signal
