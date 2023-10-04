@@ -11,7 +11,7 @@ async def notification_callback(bridge: gb.Bridge, **signal): # Code runs when r
         status = signal.get("Status")
         color = signal.get("Color")
         stone = signal.get("Stone")
-        if stone == gc.STONE_FINISH and color == gc.COLOR_BLUE:
+        if color == gc.COLOR_GREEN:
             if Count != 2:
                 await bridge.send_signal(status=gc.STATUS_ALL, color_channel=gc.COLOR_GREEN, stone=gc.STONE_BRIDGE,
                                          resends=12)

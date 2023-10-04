@@ -40,7 +40,7 @@ CurrentSlots = SlotsMM
 
 ButtonEnabled = True
 RotateEnabled = True
-Wait = True
+Wait = False
 Connection = False
 DisEvent = False
 RollingEvent = False
@@ -49,7 +49,7 @@ bridge = gb.Bridge()
 bridges = [gb.Bridge(), gb.Bridge(), gb.Bridge(), gb.Bridge(), gb.Bridge(), gb.Bridge()]
 
 
-# CustomCarakters
+# CustomCaracters
 arrow = (
     0b00000,
     0b00100,
@@ -518,50 +518,56 @@ def ResetRolling(index, row):
 
 
 def buttonPress(arg):
-    global MenuDeph, FMenuDeph, MenuIndex, MenuMaxIndex, MacAddresses, MenuMMIndex, RotateEnabled, ButtonEnabled, Wait, Scripts, MenuPrDeph, RollingEvent, RollingFlag
+    async def Pressed():
+        global MenuDeph, FMenuDeph, MenuIndex, MenuMaxIndex, MacAddresses, MenuMMIndex, RotateEnabled, ButtonEnabled, Wait,\
+            Scripts, MenuPrDeph, RollingEvent, RollingFlag, Connecting
 
-    if ButtonEnabled and Wait:
-        MenuPrDeph = MenuDeph
-        if RollingEvent:
-            ResetRolling(MenuIndex, CursorPos)
+        if ButtonEnabled and Wait:
+            MenuPrDeph = MenuDeph
+            if RollingEvent:
+                ResetRolling(MenuIndex, CursorPos)
 
-        ButtonEnabled = False
-        RotateEnabled = False
-    # MainMenu
-    if MenuDeph == 0:
-        MenuMMIndex = MenuIndex
-        MenuDeph = 1
-    # ConnectionMenu
-    elif MenuDeph == 1:
-        if MenuIndex == 0:
-            MenuDeph = 0
-        elif MenuIndex == 1:
-            if Scripts[MenuMMIndex] != "none":
-                Stop()
+            ButtonEnabled = False
+            RotateEnabled = False
+            # MainMenu
+            if MenuDeph == 0:
+                MenuMMIndex = MenuIndex
+                MenuDeph = 1
+            # ConnectionMenu
+            elif MenuDeph == 1:
+                if MenuIndex == 0:
+                    MenuDeph = 0
+                elif MenuIndex == 1:
+                    if Scripts[MenuMMIndex] != "none":
+                        Stop()
+                    else:
+                        MenuDeph = FMenuDeph
+                elif MenuIndex == 2:
+                    if MacAddresses[MenuMMIndex] == "none":
+                        asyncio.run_coroutine_threadsafe(SetMac(), loop)
+                        while Wait:
+                            await asyncio.sleep(0.01)
+                        Wait = True
+                    elif MacAddresses[MenuMMIndex] != "none":
+                        RemoveMac()
+            # FileMenu
+            elif MenuDeph >= 2:
+                if MenuIndex == 0:
+                    FMenuDeph = MenuDeph
+                    MenuDeph = 1
+                else:
+                    FMN()
+
+            if MenuDeph != MenuPrDeph:
+                ResetMenu()
             else:
-                MenuDeph = FMenuDeph
-        elif MenuIndex == 2:
-            if MacAddresses[MenuMMIndex] == "none":
-                asyncio.run_coroutine_threadsafe(SetMac(), loop)
-                while Wait:
-                    time.sleep(0.01)
-                Wait = True
-            elif MacAddresses[MenuMMIndex] != "none":
-                RemoveMac()
-    # FileMenu
-    elif MenuDeph >= 2:
-        if MenuIndex == 0:
-            FMenuDeph = MenuDeph
-            MenuDeph = 1
+                await asyncio.sleep(0.01)
+                ButtonEnabled = True
+                RotateEnabled = True
         else:
-            FMN()
+            return
 
-    if MenuDeph != MenuPrDeph:
-        ResetMenu()
-    else:
-        time.sleep(0.1)
-        ButtonEnabled = True
-        RotateEnabled = True
+    asyncio.run_coroutine_threadsafe(Pressed(),loop)
 
 
 def valueChanged(value, direction):
@@ -604,7 +610,7 @@ if __name__ == "__main__":
         e1 = Encoder(4, 17, valueChanged)
 
         GPIO.setup(buttonPin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-        GPIO.add_event_detect(buttonPin, GPIO.RISING, callback=buttonPress, bouncetime=200)
+        GPIO.add_event_detect(buttonPin, GPIO.RISING, callback=buttonPress, bouncetime=300)
 
         lcd.create_char(0, arrow)
         lcd.create_char(1, back_arrow)
@@ -621,6 +627,8 @@ if __name__ == "__main__":
         lcd.clear()
         Cursor(1)
         Menu()
+        time.sleep(1)
+        Wait = True
         asyncio.get_event_loop().run_forever()
     except KeyboardInterrupt:
         lcd.close(clear=True)
