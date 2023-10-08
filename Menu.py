@@ -518,8 +518,10 @@ def ResetRolling(index, row):
 
 
 def buttonPress(arg):
-    async def Pressed():
-        global MenuDeph, FMenuDeph, MenuIndex, MenuMaxIndex, MacAddresses, MenuMMIndex, RotateEnabled, ButtonEnabled, Wait,\
+    global ButtonEnabled, Wait
+
+    def pressed():
+        global MenuDeph, FMenuDeph, MenuIndex, MenuMaxIndex, MacAddresses, MenuMMIndex, RotateEnabled, ButtonEnabled, Wait, \
             Scripts, MenuPrDeph, RollingEvent, RollingFlag, Connecting
 
         if ButtonEnabled and Wait:
@@ -546,7 +548,7 @@ def buttonPress(arg):
                     if MacAddresses[MenuMMIndex] == "none":
                         asyncio.run_coroutine_threadsafe(SetMac(), loop)
                         while Wait:
-                            await asyncio.sleep(0.01)
+                            time.sleep(0.01)
                         Wait = True
                     elif MacAddresses[MenuMMIndex] != "none":
                         RemoveMac()
@@ -561,14 +563,16 @@ def buttonPress(arg):
             if MenuDeph != MenuPrDeph:
                 ResetMenu()
             else:
-                await asyncio.sleep(0.01)
+                time.sleep(0.01)
                 ButtonEnabled = True
                 RotateEnabled = True
         else:
             return
+    async def buttonCheck():
+        if ButtonEnabled and Wait:
+            await asyncio.get_event_loop().run_in_executor(None, pressed)
 
-    asyncio.run_coroutine_threadsafe(Pressed(),loop)
-
+    asyncio.run_coroutine_threadsafe(buttonCheck(), loop)
 
 def valueChanged(value, direction):
     global MenuPos, CursorPos, MenuMaxPos, MenuIndex, RollingEvent
