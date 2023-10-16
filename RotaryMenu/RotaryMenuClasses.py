@@ -10,9 +10,9 @@ class NoMenuTypeSet(Exception):
     "Raised when object using MenuType is created"
     pass
 
-class MenuType:
 
-    def __init__(self, slots: list = None, callback= None):
+class MenuType:
+    def __init__(self, slots: list = None, callback= None,):
         self.slots = slots
         self.callback = callback
 
@@ -23,16 +23,23 @@ class MenuType:
 
 class Main(MenuType):
     def __init__(self, slots: list = None, callback= None):
-        self.slots = slots
-        self.callback = callback
+        super().__init__(slots=slots, callback=callback)
+
+
 class Sub(MenuType):
     def __init__(self, slots: list = None, callback= None):
-        self.slots = slots
-        self.callback = callback
+        super().__init__(slots=slots, callback=callback)
+
+
 class File(MenuType):
-    def __init__(self, path: Path = None, callback= None):
+    def __init__(self, path: Path = None, callback= None, filter: str = None):
         self.path = path
-        self.callback = callback
+        self.filter = filter
+        self.file_menu_deph = 0
+        super().__init__(slots=self.files_to_slots(), callback=callback)
+
+    def files_to_slots(self):
+        pass
 
 
 class RotaryMenu:
