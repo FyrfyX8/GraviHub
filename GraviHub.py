@@ -3,12 +3,12 @@ from RPLCD.i2c import CharLCD
 import RPi.GPIO as GPIO
 import asyncio
 from gravitraxconnect import gravitrax_bridge as gb
-from encoder import Encoder
+from RotaryMenu.encoder import Encoder
 import json
 from pathlib import Path
 import importlib.util
 
-# GraviHub V.1
+# GraviHub v1.0.0
 
 lcd = CharLCD(i2c_expander="PCF8574", address=0x27, port=1, cols=20, rows=4, dotsize=8)
 GPIO.setmode(GPIO.BCM)
