@@ -568,11 +568,13 @@ def buttonPress(arg):
                 RotateEnabled = True
         else:
             return
+
     async def buttonCheck():
         if ButtonEnabled and Wait:
             await asyncio.get_event_loop().run_in_executor(None, pressed)
 
     asyncio.run_coroutine_threadsafe(buttonCheck(), loop)
+
 
 def valueChanged(value, direction):
     global MenuPos, CursorPos, MenuMaxPos, MenuIndex, RollingEvent
