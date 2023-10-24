@@ -10,14 +10,13 @@ defaultLCD = CharLCD(i2c_expander="PCF8574", address=0x27, port=1, cols=20, rows
 
 
 class MenuType(ABC):
-    def __init__(self, slots: list = [], value_callback=None,):
+    def __init__(self, slots: list = [], value_callback=None):
         self.slots = slots
         self.value_callback = value_callback
 
     def change_slot(self, index: int, slot: str):
         del self.slots[index]
         self.slots.insert(index, slot)
-
 
 
 class Main(MenuType):
@@ -31,48 +30,63 @@ class Sub(MenuType):
 
 
 class File(MenuType):
-    def __init__(self, path: Path, value_callback, extension_filter: list = [".py"], show_folders: bool = True, pr_slots: list = [],
-                 dir_affix: str = "#+#", **kwargs):
+    def __init__(self, path: Path, value_callback, extension_filter: list = [".py"], show_folders: bool = True,
+                 pr_slots: list = [], dir_affix: str = "#+#", custom_folder_behaviour=False, **kwargs):
         self.path = path
+        self.current_path = path
         self.extension_filter = extension_filter
         self.file_menu_depth = 0
         self.show_folders = show_folders
         self.dir_affix = dir_affix.split("#+#", 1)
         self.file_affix = kwargs
         self.pr_slots = pr_slots
-        self.pr_slots_max_index = len(pr_slots)
-        print(self.pr_slots + self.files_to_slots())
+        self.pr_slots_last_index = len(pr_slots) - 1
+        self.custom_folder_behaviour = custom_folder_behaviour
 
         super().__init__(self.pr_slots + self.files_to_slots(), value_callback=value_callback)
 
     def files_to_slots(self):
-        print("hi")
         file_slots = []
-        for folder in self.path.iterdir():
+        if self.file_menu_depth > 0:
+            file_slots.append(f"{self.dir_affix[0]}#+#..#+#{self.dir_affix[1]}")
+        for folder in self.current_path.iterdir():
             if folder.is_dir() and not folder.name.startswith("__"):
-                print(f"{self.dir_affix[0]}#+#{folder.name}#+#{self.dir_affix[1]}")
                 file_slots.append(f"{self.dir_affix[0]}#+#{folder.name}#+#{self.dir_affix[1]}")
-        for file in self.path.iterdir():
-            try:
-                if file.is_file() and file.suffix in self.extension_filter:
-                    affix_filter = ""
-                    for extension in file.suffixes:
-                        affix_filter = f"{affix_filter}{extension[1:]}_"
-                    affix_filter = f"{affix_filter}affix"
+        for file in self.current_path.iterdir():
+            if file.is_file() and file.suffix in self.extension_filter:
+                affix_filter = ""
+                for extension in file.suffixes:
+                    affix_filter = f"{affix_filter}{extension[1:]}_"
+                affix_filter = f"{affix_filter}affix"
+                if self.file_affix.get(affix_filter) is not None:
                     current_file_affix: str = self.file_affix.get(affix_filter)
                     backed_file_affix = current_file_affix.split("#+#", 1)
                     file_slots.append(f"{backed_file_affix[0]}#+#{file.name}#+#{backed_file_affix[1]}")
-            except Exception:
-                file_slots.append(file.name)
-                print(file_slots)
+                else:
+                    file_slots.append(f"#+#{file.name}#+#")
         return file_slots
 
+    def return_to_parent(self):
+        self.file_menu_depth -= 1
+        self.set_path(self.current_path.parent)
+
+    def set_path(self, path: Path, file_menu_depth: int = None):
+        if file_menu_depth is not None:
+            if file_menu_depth <= 0:
+                raise ValueError
+            else:
+                self.file_menu_depth = file_menu_depth
+        self.current_path = path
+        self.slots = self.pr_slots + self.files_to_slots()
+
+    def move_to_dir(self, dir_name: str):
+        if (self.current_path / dir_name).is_dir():
+            self.file_menu_depth += 1
+            self.set_path(self.current_path / dir_name)
 
 
 class RotaryMenu:
-
-    def __init__(self, lcd: CharLCD = defaultLCD, *, left_pin: int,
-                 right_pin: int, button_pin: int, main: Main,
+    def __init__(self, lcd: CharLCD = defaultLCD, *, left_pin: int, right_pin: int, button_pin: int, main: Main,
                  menu_timeout: int = 0):
 
         GPIO.setmode(GPIO.BCM)
@@ -84,6 +98,7 @@ class RotaryMenu:
         self.loop = asyncio.get_event_loop()
         self.main = main
         self.menu_timeout = menu_timeout
+        self.timeout_reset = False
         self.current_menu = self.main
         self.wait = False
         self.custom_cursor = False
@@ -95,14 +110,24 @@ class RotaryMenu:
         self.max_cursor_pos = self.get_max_cursor_pos()
         self.scrolling = False
         self.end_scrolling = False
-
+        self.scrolling_end = False
+        self.backed_slots = []
+        self.get_backed_slots()
+        asyncio.run_coroutine_threadsafe(self.timeout_timer(), self.loop)
 
     def get_max_index(self):
+        print("max index:", len(self.current_menu.slots) - 1)
         return len(self.current_menu.slots) - 1
 
     def get_max_shift(self):
-        print(len(self.current_menu.slots) - self.lcd.lcd.rows)
-        return len(self.current_menu.slots) - self.lcd.lcd.rows
+        max_shift = len(self.current_menu.slots) - self.lcd.lcd.rows
+
+        if max_shift >= 0:
+            print("max shift", max_shift)
+            return max_shift
+        else:
+            print("max shift", 0)
+            return 0
 
     def get_max_cursor_pos(self):
         return self.lcd.lcd.rows
@@ -110,7 +135,6 @@ class RotaryMenu:
     def get_backed_slots(self):
         backed_slots = []
         index = 0
-        backed_name = ""
         for i in self.current_menu.slots:
             slot = self.current_menu.slots[index].split("#+#", 2)
             space = self.lcd.lcd.cols - len(slot[0]) - len(slot[2]) - 1
@@ -120,10 +144,23 @@ class RotaryMenu:
                 backed_name = slot[1] + " " * (space - len(slot[1]))
             backed_slots.append(f"{slot[0]}{backed_name}{slot[2]}")
             index += 1
-        return backed_slots
+        self.backed_slots = backed_slots
 
     def return_to_main(self, do_setup_callback: bool):
         self.set(self.main, do_setup_callback)
+
+    async def timeout_timer(self):
+        clock = 0
+        while self.menu_timeout > 0:
+            if clock == self.menu_timeout and self.current_menu != self.main:
+                self.set_wait()
+                self.return_to_main(True)
+            if self.timeout_reset:
+                self.timeout_reset = False
+                clock = 0
+            else:
+                await asyncio.sleep(1)
+                clock += 1
 
     def get_overflow(self, index):
         slot = self.current_menu.slots[index].split("#+#", 2)
@@ -142,22 +179,19 @@ class RotaryMenu:
         self.custom_cursor = not self.custom_cursor
 
     def set(self, menu: MenuType, do_setup_callback=False):
-        print(self.current_menu)
         self.current_menu = menu
-        print(self.current_menu)
         if do_setup_callback:
             self.callback("setup", value="none")
         self.reset_menu()
 
-
     def callback(self, callback_type: str, value=None):
         self.current_menu.value_callback(callback_type, value)
+        self.reset_wait()
 
     async def start_scrolling(self):
 
         if self.get_overflow(self.index) and not self.custom_cursor:
             self.scrolling = True
-            pr_cursor_pos = self.cursor_pos
             shift = 0
             for t in range(1000):
                 if not self.end_scrolling:
@@ -176,31 +210,26 @@ class RotaryMenu:
                 print(shift_name)
                 self.lcd.write_string(f"{slot[0]}{shift_name}{slot[2]}")
                 shift += 1
-                for t in range(20):
+                for t in range(25):
                     if not self.end_scrolling:
                         await asyncio.sleep(0.01)
                     else:
                         self.scrolling = False
                         return
-            while True:
-                if not self.end_scrolling:
-                    await asyncio.sleep(0.01)
-                else:
-                    self.scrolling = False
-                    return
-
-
+            self.scrolling_end = True
+            return
 
     def stop_scrolling(self, row, index):
         self.end_scrolling = True
         while self.scrolling:
+            if self.scrolling_end:
+                self.scrolling_end = False
+                self.scrolling = False
             time.sleep(0.01)
         self.end_scrolling = False
         self.reset_wait()
-        print(row)
         self.lcd.cursor_pos = (row, 1)
-        print(self.get_backed_slots()[index])
-        self.lcd.write_string(self.get_backed_slots()[index])
+        self.lcd.write_string(self.backed_slots[index])
 
     def cursor(self, pr_cursor_pos):
         self.lcd.cursor_pos = (pr_cursor_pos, 0)
@@ -216,25 +245,45 @@ class RotaryMenu:
     def menu(self):
         current_index = self.shift
         current_row = 0
-        for t in range(4):
-            self.lcd.cursor_pos = (current_row, 1)
-            self.lcd.write_string(self.get_backed_slots()[current_index])
-            current_row += 1
-            current_index += 1
+        print_str = ""
+        for t in range(self.lcd.lcd.rows):
+            try:
+                if current_row == self.cursor_pos:
+                    print_str = f"{print_str}>"
+                else:
+                    print_str = f"{print_str} "
+                print_str = f"{print_str}{self.backed_slots[current_index]}\n\r"
+                current_row += 1
+                current_index += 1
+            except IndexError:
+                pass
+        self.lcd.cursor_pos = (0, 0)
+        self.lcd.write_string(print_str)
 
     def reset_menu(self):
         self.lcd.clear()
-        pr_index = self.index
-        pr_cursor_pos = self.cursor_pos
+        time.sleep(0.01)
         self.index = 0
         self.shift = 0
-        self.stop_scrolling(pr_cursor_pos, pr_index)
+        self.max_cursor_pos = self.get_max_cursor_pos()
+        self.max_index = self.get_max_index()
+        self.max_shift = self.get_max_shift()
+        if self.scrolling:
+            self.end_scrolling = True
+            while self.scrolling:
+                if self.scrolling_end:
+                    self.scrolling_end = False
+                    self.scrolling = False
+                time.sleep(0.01)
+            self.end_scrolling = False
+        self.get_backed_slots()
         self.reset_cursor()
         self.menu()
+        time.sleep(0.01)
+        self.reset_wait()
 
     def value_changed(self, value, direction):
-        if not self.wait:
-            self.set_wait()
+        def changed():
             if self.custom_cursor:
                 self.callback("direction", value=direction)
             else:
@@ -257,32 +306,53 @@ class RotaryMenu:
                             self.cursor_pos = self.max_cursor_pos - 1
                             if self.shift != self.max_shift:
                                 self.shift += 1
-
                 if self.scrolling:
                     self.stop_scrolling(pr_cursor_pos, pr_index)
                 if self.cursor_pos != pr_cursor_pos:
                     self.cursor(pr_cursor_pos)
                 if self.shift != pr_shift:
                     self.menu()
-                self.reset_wait()
                 if self.get_overflow(self.index):
                     asyncio.run_coroutine_threadsafe(self.start_scrolling(), self.loop)
+                self.reset_wait()
 
+        async def encoder_check():
+            if not self.wait:
+                self.set_wait()
+                self.timeout_reset = True
+                await self.loop.run_in_executor(None, changed)
+
+        asyncio.run_coroutine_threadsafe(encoder_check(), self.loop)
 
     def button_press(self, arg):
         def pressed():
-            self.callback("press", value=self.index)
-            self.reset_wait()
+            if isinstance(self.current_menu, File):
+                if self.index <= self.current_menu.pr_slots_last_index:
+                    self.callback("press", value=self.index)
+                elif self.current_menu.file_menu_depth >= 1 and self.index == self.current_menu.pr_slots_last_index + 1:
+                    self.current_menu.return_to_parent()
+                    self.reset_menu()
+                else:
+                    slot: str = self.current_menu.slots[self.index]
+                    check_path = self.current_menu.current_path / slot.split("#+#", 2)[1]
+                    if check_path.is_dir():
+                        if not self.current_menu.custom_folder_behaviour:
+                            self.current_menu.move_to_dir(slot.split("#+#", 2)[1])
+                            self.reset_menu()
+                        else:
+                            self.callback("dirpress", value=check_path)
+                    elif check_path is not None:
+                        if check_path.is_file():
+                            self.callback("filepress", value=check_path)
+                    else:
+                        self.callback("press", value=self.index)
+            else:
+                self.callback("press", value=self.index)
 
         async def button_check():
             if not self.wait:
                 self.set_wait()
+                self.timeout_reset = True
                 await self.loop.run_in_executor(None, pressed)
 
         asyncio.run_coroutine_threadsafe(button_check(), self.loop)
-
-
-
-
-
-
