@@ -108,6 +108,7 @@ class RotaryMenu:
         self.max_shift = self.get_max_shift()
         self.cursor_pos = 0
         self.max_cursor_pos = self.get_max_cursor_pos()
+        self.scrolling_start = True
         self.scrolling = False
         self.end_scrolling = False
         self.scrolling_end = False
@@ -191,14 +192,15 @@ class RotaryMenu:
     async def start_scrolling(self):
 
         if self.get_overflow(self.index) and not self.custom_cursor:
-            self.scrolling = True
+            self.scrolling_start = True
             shift = 0
             for t in range(1000):
                 if not self.end_scrolling:
                     await asyncio.sleep(0.001)
                 else:
-                    self.scrolling = False
                     return
+            self.scrolling_start = False
+            self.scrolling = True
             slot = self.current_menu.slots[self.index].split("#+#", 2)
             space = self.lcd.lcd.cols - len(slot[0]) - len(slot[2]) - 1
             for i in range(len(slot[1]) - space + 1):
@@ -221,15 +223,18 @@ class RotaryMenu:
 
     def stop_scrolling(self, row, index):
         self.end_scrolling = True
-        while self.scrolling:
-            if self.scrolling_end:
+        while self.scrolling or self.scrolling_start:
+            if self.scrolling_start:
+                self.scrolling_start = False
+            elif self.scrolling_end:
                 self.scrolling_end = False
                 self.scrolling = False
             time.sleep(0.01)
         self.end_scrolling = False
         self.reset_wait()
-        self.lcd.cursor_pos = (row, 1)
-        self.lcd.write_string(self.backed_slots[index])
+        if not self.scrolling_start:
+            self.lcd.cursor_pos = (row, 1)
+            self.lcd.write_string(self.backed_slots[index])
 
     def cursor(self, pr_cursor_pos):
         self.lcd.cursor_pos = (pr_cursor_pos, 0)
@@ -245,20 +250,14 @@ class RotaryMenu:
     def menu(self):
         current_index = self.shift
         current_row = 0
-        print_str = ""
         for t in range(self.lcd.lcd.rows):
             try:
-                if current_row == self.cursor_pos:
-                    print_str = f"{print_str}>"
-                else:
-                    print_str = f"{print_str} "
-                print_str = f"{print_str}{self.backed_slots[current_index]}\n\r"
+                self.lcd.cursor_pos = (current_row, 1)
+                self.lcd.write_string(self.backed_slots[current_index])
                 current_row += 1
                 current_index += 1
             except IndexError:
                 pass
-        self.lcd.cursor_pos = (0, 0)
-        self.lcd.write_string(print_str)
 
     def reset_menu(self):
         self.lcd.clear()
@@ -283,7 +282,9 @@ class RotaryMenu:
         self.reset_wait()
 
     def value_changed(self, value, direction):
-        def changed():
+        if not self.wait:
+            self.set_wait()
+            self.timeout_reset = True
             if self.custom_cursor:
                 self.callback("direction", value=direction)
             else:
@@ -306,7 +307,7 @@ class RotaryMenu:
                             self.cursor_pos = self.max_cursor_pos - 1
                             if self.shift != self.max_shift:
                                 self.shift += 1
-                if self.scrolling:
+                if self.scrolling or self.scrolling_start:
                     self.stop_scrolling(pr_cursor_pos, pr_index)
                 if self.cursor_pos != pr_cursor_pos:
                     self.cursor(pr_cursor_pos)
@@ -316,13 +317,6 @@ class RotaryMenu:
                     asyncio.run_coroutine_threadsafe(self.start_scrolling(), self.loop)
                 self.reset_wait()
 
-        async def encoder_check():
-            if not self.wait:
-                self.set_wait()
-                self.timeout_reset = True
-                await self.loop.run_in_executor(None, changed)
-
-        asyncio.run_coroutine_threadsafe(encoder_check(), self.loop)
 
     def button_press(self, arg):
         def pressed():
