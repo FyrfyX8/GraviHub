@@ -3,53 +3,58 @@ from RPLCD.i2c import CharLCD
 import RPi.GPIO as GPIO
 import asyncio
 from gravitraxconnect import gravitrax_bridge as gb
-from RotaryMenu.encoder import Encoder
-import json
+from RotaryMenu import RotaryMenuClasses
+from configparser import ConfigParser
 from pathlib import Path
 import importlib.util
+import pyudev
+import os
 
-# GraviHub v1.0.0
+# GraviHub v2.0.0
 
-lcd = CharLCD(i2c_expander="PCF8574", address=0x27, port=1, cols=20, rows=4, dotsize=8)
-GPIO.setmode(GPIO.BCM)
+# settings.ini
+settings = ConfigParser()
+settings.read("settings.ini")
 
-buttonPin = 27
+# lcd
+lcd = CharLCD(i2c_expander=settings["lcd"]["i2c_expander"], address=0x27, port=1,
+              cols=int(settings["lcd"]["cols"]), rows=int(settings["lcd"]["rows"]),
+              dotsize=int(settings["lcd"]["dotsize"]))
 
-CursorPos = 0
-MenuIndex = 0
-MenuMMIndex = 0
-MenuMaxIndex = 0
-MenuPos = 0
-MenuMaxPos = 0
-MenuDeph = 0
-MenuPrDeph = 0
-FMenuDeph = 2
-BridgeCount = 0
+# RMC Renaming for better usage
+RotaryMenu = RotaryMenuClasses.RotaryMenu
+MenuMain = RotaryMenuClasses.Main
+MenuSub = RotaryMenuClasses.Sub
+MenuFile = RotaryMenuClasses.File
 
-
-ConfScripts = Path("/home/fnorb/GraviHub/Scripts")
-CurrentPath = ConfScripts
-ConnectionPath = Path("/home/fnorb/GraviHub/Connections.json")
-
-SlotsMM = ["Connection1", "Connection2", "Connection3", "Connection4", "Connection5", "Connection6"]
-MacAddresses = []
-Scripts = ["none", "none", "none", "none", "none", "none"]
-SlotsCM = ["Main Menu", "Start Script", "Set Mac-Address",]
-SlotsFM = ["Connection Menu"]
-CurrentSlots = SlotsMM
-
-ButtonEnabled = True
-RotateEnabled = True
-Wait = False
-Connection = False
-DisEvent = False
-RollingEvent = False
-RollingFlag = True
-bridge = gb.Bridge()
+# Variables for the Bridges
+mac_addresses = [settings["connections"]["c1"], settings["connections"]["c2"], settings["connections"]["c3"],
+                 settings["connections"]["c4"], settings["connections"]["c5"], settings["connections"]["c6"]]
 bridges = [gb.Bridge(), gb.Bridge(), gb.Bridge(), gb.Bridge(), gb.Bridge(), gb.Bridge()]
+battery_levels = [0, 0, 0, 0, 0, 0]
+scripts = ["none", "none", "none", "none", "none", "none"]
+bridge_count = 0
+bridge_mode = False
 
+# Encoder settings
+encoder_button = int(settings["encoder"]["encoder_button"])
+encoder_left = int(settings["encoder"]["encoder_left"])
+encoder_right = int(settings["encoder"]["encoder_right"])
 
-# CustomCaracters
+# asyncio variables
+
+loop = asyncio.get_event_loop()
+
+# pathlib variables
+
+default = Path(settings["settings"]["scripts_path"])
+
+# pyudev variables
+
+context = pyudev.Context()
+monitor = pyudev.Monitor.from_netlink(context)
+
+# custom characters
 arrow = (
     0b00000,
     0b00100,
@@ -70,7 +75,7 @@ back_arrow = (
     0b00000,
     0b00000
 )
-no_skript = (
+no_script = (
     0b00000,
     0b01111,
     0b10001,
@@ -80,7 +85,7 @@ no_skript = (
     0b11110,
     0b00000
 )
-skript_running = (
+script_running = (
     0b00000,
     0b01111,
     0b11111,
@@ -100,543 +105,288 @@ folder_char = (
     0b00000,
     0b00000
 )
+battery_empty = (
+    0b00000,
+    0b01110,
+    0b11111,
+    0b10011,
+    0b10101,
+    0b11001,
+    0b11111,
+    0b00000
+)
+battery_low = (
+    0b00000,
+    0b01110,
+    0b11111,
+    0b10001,
+    0b10001,
+    0b11111,
+    0b11111,
+    0b00000
+)
+battery_medium = (
+    0b00000,
+    0b01110,
+    0b11111,
+    0b10001,
+    0b11111,
+    0b11111,
+    0b11111,
+    0b00000
+)
+battery_full = (
+    0b00000,
+    0b01110,
+    0b11111,
+    0b11111,
+    0b11111,
+    0b11111,
+    0b11111,
+    0b00000
+)
+usb_character = (
+    0b00100,
+    0b01110,
+    0b00101,
+    0b10101,
+    0b10110,
+    0b01100,
+    0b00100,
+    0b00000
+)
+
+# other variables
+
+connection_index = 0
+# Menus
 
 
-def ReadMA():
-    global MacAddresses, ConfPath
+def info_screen_callback(callback_type, value):
+    if callback_type == "after_setup":
+        lcd.create_char(0, no_script)
+        lcd.create_char(1, script_running)
+        lcd.create_char(2, battery_empty)
+        lcd.create_char(3, battery_low)
+        lcd.create_char(4, battery_medium)
+        lcd.create_char(5, battery_full)
+        lcd.home()
+        lcd.write_string("C1\x02\x00/  C2\x02\x00/  C3\x02\x00/ \r\n" +
+                         "C4\x02\x00/  C5\x02\x00/  C6\x02\x00/ \r\n" +
+                         "GraviHub Idle.\r\n")
+        if bridge_mode:
+            lcd.write_string("Bridge Mode: On")
+        else:
+            lcd.write_string("bridge Mode: Off")
+        active = True
+    if callback_type == "press":
+        lcd.clear()
+        GraviHub.set(selection_menu)
+
+
+info_screen = MenuMain(["#+##+#"], info_screen_callback, after_reset_callback=True, custom_cursor=True)
+
+selection_menu_slots = ["#+#Info Screen#+#\x03", "#+#Connections#+#\x02", "#+#Bridge Mode#+#[Off]",
+                        "#+#Settings#+#\x02", "#+#Manage Files#+#\x02"]
+
+
+def selection_menu_callback(callback_type, value):
+    global bridge_mode
+    if callback_type == "setup":
+        lcd.clear()
+        lcd.create_char(2, arrow)
+        lcd.create_char(3, back_arrow)
+    if callback_type == "press":
+        if value == 0:
+            GraviHub.set(info_screen)
+        elif value == 1:
+            GraviHub.set(connections_menu)
+        elif value == 2:
+            if bridge_mode:
+                selection_menu.change_slot(2, "#+#Bridge Mode#+#[Off]")
+                bridge_mode = False
+            else:
+                selection_menu.change_slot(2, "#+#Bridge Mode#+#[On]")
+                bridge_mode = True
+            print(selection_menu.slots)
+            GraviHub.update_current_slot()
+        elif value == 3:
+            GraviHub.set(settings_menu)
+
+
+selection_menu = MenuSub(selection_menu_slots, selection_menu_callback, do_setup_callback=True)
+
+connections_menu_slots = ["#+#Main Menu#+#\x02", "#+#Connection1#+#\x03\x00", "#+#Connection2#+#\x03\x00",
+                          "#+#Connection3#+#\x03\x00", "#+#Connection4#+#\x03\x00", "#+#Connection5#+#\x03\x00",
+                          "#+#Connection6#+#\x03\x00"]
+
+def connections_menu_callback(callback_type, value):
+    if callback_type == "setup":
+        lcd.clear()
+        lcd.create_char(2, back_arrow)
+        lcd.create_char(3, battery_empty)
+        lcd.create_char(4, battery_low)
+        lcd.create_char(5, battery_medium)
+        lcd.create_char(6, battery_full)
+    if callback_type == "press":
+        if value == 0:
+            GraviHub.set(selection_menu)
+        if value > 0:
+            print(value - 1)
+            GraviHub.set(bridge_menu)
+
+connections_menu = MenuSub(connections_menu_slots, connections_menu_callback, do_setup_callback=True)
+
+bridge_menu_slots = ["#+#MainMenu#+#\x02", "#+#Back#+#\x02", "#+#Start Script#+#\x03", "#+#Set MAC#+#\x03",
+                     "#+#Disconnect#+#\x02"]
+
+def bridge_menu_callback(callback_type, value):
+    if callback_type == "setup":
+        lcd.clear()
+        lcd.create_char(3, arrow)
+    if callback_type == "press":
+        if value == 0:
+            GraviHub.set(selection_menu)
+        elif value == 1:
+            GraviHub.set(connections_menu)
+        elif value == 2:
+            GraviHub.set(script_selection_menu)
+
+
+bridge_menu = MenuSub(bridge_menu_slots, bridge_menu_callback, do_setup_callback=True)
+
+script_selection_menu_pr_slots = ["#+#Back#+#\x02"]
+
+def script_selection_menu_callback(callback_type, value):
+    if callback_type == "setup":
+        lcd.clear()
+        lcd.create_char(0, usb_character)
+        lcd.create_char(1, folder_char)
+    if callback_type == "press":
+        if value == 0:
+            GraviHub.set(bridge_menu)
+
+script_selection_menu = MenuFile(default, script_selection_menu_callback, pr_slots=script_selection_menu_pr_slots,
+                                 dir_affix="\x01#+#", do_setup_callback=True)
+
+settings_menu_slots = ["#+#Main Menu#+#\x03","#+#Send Signals#+#\x02", "#+#Show USB#+#[Off]", "#+#Script Setup#+#[Off]",
+                       "#+#Script Shutdown#+#[Off]"]
+
+def settings_menu_callback(callback_type, value):
+    if callback_type == "setup":
+        pass
+    if callback_type == "press":
+        if value == 0:
+            GraviHub.set(selection_menu)
+
+settings_menu = MenuSub(settings_menu_slots, settings_menu_callback, do_setup_callback=True)
+
+GraviHub = RotaryMenu(right_pin=encoder_right, left_pin=encoder_left, button_pin=encoder_button, main=info_screen,
+                      menu_timeout=30)
+
+# async functions
+
+
+async def return_first_bridge():
+    index = 0
+    for bride in bridges:
+        if await bride.is_connected():
+            return index
+        else:
+            index += 1
+
+async def get_battery_levels():
+    global battery_levels
+    index = 0
+    for bridge in bridges:
+        if await bridge.is_connected():
+            battery_levels.pop(index)
+            battery_levels.insert(index, await bridge.request_battery())
+        else:
+            battery_levels.pop(index)
+            battery_levels.insert(index, 0)
+
+# functions
+
+def usb_handler(action, device):
+    global usb_paths
+    if 'ID_FS_TYPE' in device:
+
+        if action == "add":
+            add_usb(device)
+
+        if action == "remove":
+            remove_usb(device)
+
+def add_usb(device):
+    if device.get('ID_FS_LABEL') == "none":
+        name = "USB Drive"
+    else:
+        name = device.get('ID_FS_LABEL')
+
+    usb_path = default / f"__usb-{name}__"
     try:
-        with ConnectionPath.open("r") as Connections:
-            MacAddresses = json.load(Connections)
-        Connections.close()
+        usb_path.mkdir()
+    except FileExistsError:
+        pass
+    os.system(f"sudo mount {device.device_node} {usb_path}")
+    script_selection_menu.fmd0_slots.insert(script_selection_menu.pr_slots_last_index, f"\x00#+#{name}#+#")
+    if isinstance(GraviHub.current_menu, MenuFile):
+        while GraviHub.wait:
+            time.sleep(0.01)
+        GraviHub.current_menu.return_to_default()
+        GraviHub.reset_menu()
+
+def remove_usb(device):
+    if device == "none":
+        name = "USB Drive"
+    else:
+        name = device.get('ID_FS_LABEL')
+
+    usb_path = default / f"__usb-{name}__"
+    os.system(f"sudo umount {device.device_node}")
+    try:
+        usb_path.rmdir()
     except FileNotFoundError:
-        with ConnectionPath.open("w") as Connections:
-            MacAddresses = ["none", "none", "none", "none", "none", "none"]
-            json.dump(MacAddresses, Connections)
-            Connections.close()
+        pass
+    script_selection_menu.fmd0_slots.remove(f"\x00#+#{name}#+#")
+    if isinstance(GraviHub.current_menu, MenuFile):
+        while GraviHub.wait:
+            time.sleep(0.01)
+        GraviHub.current_menu.return_to_default()
+        GraviHub.reset_menu()
 
-
-def Cursor(CursorPrPos):
-    global CursorPos
-    lcd.cursor_pos = (CursorPrPos, 0)
-    lcd.write_string(" ")
-    lcd.cursor_pos = (CursorPos, 0)
-    lcd.write_string(">")
-
-
-def ResetCursor():
-    global CursorPos
-    CursorPrPos = CursorPos
-    CursorPos = 0
-    Cursor(CursorPrPos)
-
-def GetFiles():
-    global SlotsFM, CurrentPath, MenuDeph
-    if MenuDeph == 2:
-        SlotsFM = ["Connection Menu"]
-    else:
-        SlotsFM = ["Connection Menu", "\x04.."]
-    for folder in CurrentPath.iterdir():
-        if folder.is_dir() and not folder.name.startswith("__"):
-            SlotsFM.append("\x04"+folder.name)
-    for file in CurrentPath.glob("*.py"):
-        SlotsFM.append(file.name)
-
-
-
-
-
-def MenuLength(MenuType):
-    global MenuMaxIndex, MenuMaxPos
-    MenuMaxIndex = len(MenuType) - 1
-    MenuMaxPos = MenuMaxIndex - 3
-
-
-def Menu():
-    global MenuDeph, SlotsCM, SlotsMM, SlotsFM, MenuPos, MenuMaxIndex, Scripts, MenuMMIndex, CurrentSlots
-    CurrentSlots = ["none", "none", "none", "none"]
-    if MenuDeph == 0:
-        CurrentSlots = SlotsMM
-    elif MenuDeph == 1:
-        CurrentSlots = SlotsCM
-        if Scripts[MenuMMIndex] != "none":
-            del CurrentSlots[1]
-            CurrentSlots.insert(1, f"Stop Script       {Scripts[MenuMMIndex]}")
-        else:
-            del CurrentSlots[1]
-            CurrentSlots.insert(1, "Start Script")
-        if MacAddresses[MenuMMIndex] != "none":
-            del CurrentSlots[2]
-            CurrentSlots.insert(2, "Del Mac-Address")
-        else:
-            del CurrentSlots[2]
-            CurrentSlots.insert(2, "Set Mac-Address")
-
-    elif MenuDeph >= 2:
-        GetFiles()
-        CurrentSlots = SlotsFM
-    MenuLength(CurrentSlots)
-    CurrentIndex = MenuPos
-    CurrentRow = 0
-    for i in range(4):
-        try:
-            if MenuDeph == 1 and CurrentIndex == 3:
-                lcd.write_string(MacAddresses[MenuMMIndex])
-            lcd.cursor_pos = (CurrentRow, 1)
-            if len(CurrentSlots[CurrentIndex]) >= 19 and MenuDeph >= 2:
-                lcd.write_string(CurrentSlots[CurrentIndex][0: 19])
-            elif len(CurrentSlots[CurrentIndex]) >= 16:
-                lcd.write_string(CurrentSlots[CurrentIndex][0: 16])
-            elif MenuDeph >= 2:
-                lcd.write_string(CurrentSlots[CurrentIndex] + " " * (18 - len(CurrentSlots[CurrentIndex])))
-            else:
-                lcd.write_string(CurrentSlots[CurrentIndex] + " " * (16 - len(CurrentSlots[CurrentIndex])))
-            if MenuDeph == 0:
-                if MacAddresses[CurrentIndex] == "none":
-                    lcd.write_string(" ")
-                else:
-                    lcd.write_string("M")
-                if Scripts[CurrentIndex] == "none":
-                    lcd.write_string("\x02\x00")
-                else:
-                    lcd.write_string("\x03\x00")
-            if MenuDeph == 1:
-                if CurrentIndex == 0:
-                    lcd.write_string("  \x01")
-                else:
-                    lcd.write_string("  \x00")
-            if MenuDeph >= 2:
-                if CurrentIndex == 0:
-                    lcd.write_string("\x01")
-                else:
-                    lcd.write_string(" ")
-
-
-            CurrentRow += 1
-            CurrentIndex += 1
-        except Exception:
-            pass
-
-
-def ResetMenu():
-    global MenuIndex, MenuPos, RotateEnabled, ButtonEnabled
-    lcd.clear()
-    MenuIndex = 0
-    MenuPos = 0
-    ResetCursor()
-    Menu()
-    time.sleep(0.1)
-    RotateEnabled = True
-    ButtonEnabled = True
-
-
-async def Run(spec, Module, MacAddress):
-    global MenuMMIndex, Wait, Connection, bridges
-    spec.loader.exec_module(Module)
-    index = MenuMMIndex
-
-    def disconnect_callback(bridge: gb.Bridge, **kwargs):
-        global Wait, Scripts
-        if kwargs.get("user_disconnected"):
-            del Scripts[index]
-            Scripts.insert(index, "none")
-        else:
-            Wait = False
-            lcd.clear()
-            lcd.cursor_pos = (1, 0)
-            lcd.write_string(f"Connection{index} timeout!")
-            time.sleep(2)
-            del Scripts[index]
-            Scripts.insert(index, "none")
-            ResetMenu()
-            Wait = True
-    async def Disconnect():
-        global Wait, BridgeCount
-        lcd.clear()
-        lcd.cursor_pos = (1, 3)
-        lcd.write_string("Disconnecting!")
-        try:
-            await Module.GBshutdown(bridges[MenuMMIndex], BridgeCount)
-        except Exception as e:
-            print(e)
-        if await bridges[MenuMMIndex].disconnect(timeout=25):
-            Wait = False
-            BridgeCount -= 1
-        else:
-            await Disconnect()
-    async def main():
-        global Wait, DisEvent, BridgeCount
-
-        BridgeCount += 1
-
-        try:
-            await Module.GBsetup(bridges[MenuMMIndex], BridgeCount)
-        except Exception as e:
-            print(e)
-        if await bridges[MenuMMIndex].notification_enable(Module.notification_callback):
-            pass
-        while True:
-            if DisEvent and index == MenuMMIndex:
-                break
-            else:
-                await asyncio.sleep(0.01)
-        DisEvent = False
-        await Disconnect()
-
-    try:
-        if MacAddress != "none":
-            lcd.clear()
-            lcd.cursor_pos = (1, 0)
-            lcd.write_string(f"Connecting to\r\n   {MacAddress}")
-            if await bridges[MenuMMIndex].connect(name_or_addr=MacAddress, timeout=25, by_name=False,
-                                                  dc_callback=disconnect_callback):
-                lcd.clear()
-                lcd.cursor_pos = (1, 0)
-                lcd.write_string("Connected to Bridge!")
-                await asyncio.sleep(2)
-                Connection = True
-                Wait = False
-                await main()
-            else:
-                lcd.clear()
-                lcd.cursor_pos = (1, 0)
-                lcd.write_string("No Connection found!")
-                await asyncio.sleep(2)
-                Wait = False
-
-        else:
-            lcd.clear()
-            lcd.cursor_pos = (1, 0)
-            lcd.write_string("Connecting to Bridge")
-            if await bridges[MenuMMIndex].connect(timeout=25, dc_callback=disconnect_callback):
-                lcd.clear()
-                lcd.cursor_pos = (1, 0)
-                lcd.write_string("Connected to Bridge!")
-                await asyncio.sleep(2)
-                Connection = True
-                Wait = False
-                await main()
-            else:
-                lcd.cursor_pos = (1, 0)
-                lcd.write_string("No Connection found!")
-                await asyncio.sleep(2)
-                Wait = False
-
-    except Exception as e:
-        print(e)
-        Wait = False
-
-
-def Start(ExecuteFile):
-    global MenuMMIndex, Scripts, MacAddresses, MenuDeph, FMenuDeph, Wait, Connection
-    spec = importlib.util.spec_from_file_location(ExecuteFile.name[:-3], ExecuteFile)
-    Module = importlib.util.module_from_spec(spec)
-    asyncio.run_coroutine_threadsafe(Run(spec, Module, MacAddresses[MenuMMIndex]), loop)
-    while Wait:
-        time.sleep(0.01)
-    Wait = True
-    if Connection:
-        del Scripts[MenuMMIndex]
-        Scripts.insert(MenuMMIndex, ExecuteFile.name)
-        FMenuDeph = MenuDeph
-        MenuDeph = 1
-    else:
-        ResetMenu()
-    Connection = False
-
-
-def Stop():
-    global MenuMMIndex, Wait, Scripts, DisEvent
-
-    DisEvent = True
-    while Wait:
-        time.sleep(0.01)
-    Wait = True
-    ResetMenu()
-
-
-def FMN():
-    global MenuDeph, MenuIndex, CurrentPath, SlotsFM
-    if MenuDeph >= 3 and MenuIndex == 1:
-        MenuDeph -= 1
-        CurrentPath = CurrentPath.parent
-    else:
-        TempPath = CurrentPath / SlotsFM[MenuIndex].replace("\x04", "")
-        if TempPath.is_file():
-            Start(TempPath)
-        elif TempPath.is_dir():
-            CurrentPath = TempPath
-            MenuDeph += 1
-
-
-async def SetMac():
-    global MacAddresses, MenuMMIndex, Wait
-    async def Disconnect():
-        global Wait
-        lcd.clear()
-        lcd.cursor_pos = (1, 3)
-        lcd.write_string("Disconnecting!")
-        if await bridge.disconnect(timeout=25):
-            ResetMenu()
-            Wait = False
-        else:
-            await Disconnect()
-    if Scripts[MenuMMIndex] != "none":
-        lcd.clear()
-        lcd.cursor_pos = (1, 0)
-        lcd.write_string("Scipt is running,\r\n       can't set Mac")
-        await asyncio.sleep(1)
-        ResetMenu()
-        Wait = False
-        return
-
-    try:
-        lcd.clear()
-        lcd.cursor_pos = (1, 0)
-        lcd.write_string("Connecting To Bridge")
-        if await bridge.connect(timeout=25):
-            lcd.cursor_pos = (1, 0)
-            MacAddress = bridge.get_address()
-            lcd.write_string("Connectet To Bridge!")
-            del MacAddresses[MenuMMIndex]
-            MacAddresses.insert(MenuMMIndex, MacAddress)
-            with ConnectionPath.open("w") as Connections:
-                json.dump(MacAddresses, Connections)
-                Connections.close()
-            await asyncio.sleep(3)
-            await Disconnect()
-        else:
-            lcd.cursor_pos = (1, 0)
-            lcd.write_string("No Connection found!")
-            await asyncio.sleep(2)
-            ResetMenu()
-            Wait = False
-    except Exception as e:
-        print(e)
-
-
-def RemoveMac():
-    global MacAddresses, MenuMMIndex
-    if Scripts[MenuMMIndex] != "none":
-        lcd.clear()
-        lcd.cursor_pos = (1, 0)
-        lcd.write_string("Scipt is running,\r\n       can't del Mac")
-        time.sleep(1)
-        ResetMenu()
-        return
-    lcd.clear()
-    lcd.cursor_pos = (1, 4)
-    lcd.write_string("Removing Mac")
-    del MacAddresses[MenuMMIndex]
-    MacAddresses.insert(MenuMMIndex, "none")
-    with ConnectionPath.open("w") as Connections:
-        json.dump(MacAddresses, Connections)
-        Connections.close()
-    time.sleep(1)
-    lcd.clear()
-    lcd.cursor_pos = (1, 7)
-    lcd.write_string("Done!")
-    ResetMenu()
-
-
-async def Rolling():
-    global MenuIndex, CurrentSlots, CursorPos, RollingEvent, Wait, RollingFlag
-
-    MenuPrIndex = MenuIndex
-    shift = 0
-    for times in range(100):
-        if MenuIndex != MenuPrIndex or not ButtonEnabled:
-            return
-        else:
-            await asyncio.sleep(0.01)
-    RollingEvent = True
-    if MenuDeph <= 1:
-        for i in range(len(CurrentSlots[MenuIndex]) - 17):
-            if not RollingEvent:
-                RollingFlag = False
-                return
-            lcd.cursor_pos = (CursorPos, 1)
-            lcd.write_string(CurrentSlots[MenuIndex][shift:shift + 18])
-            await asyncio.sleep(0.01)
-            shift += 1
-            for times in range(20):
-                if not RollingEvent:
-                    RollingFlag = False
-                    return
-                else:
-                    await asyncio.sleep(0.01)
-
-    elif CurrentSlots[MenuIndex].startswith("\x04"):
-        shift = 1
-        for i in range(len(CurrentSlots[MenuIndex]) - 18):
-            if not RollingEvent:
-                RollingFlag = False
-                return
-            lcd.cursor_pos = (CursorPos, 2)
-            lcd.write_string(CurrentSlots[MenuIndex][shift:shift + 18])
-            await asyncio.sleep(0.01)
-            shift += 1
-            for times in range(20):
-                if not RollingEvent:
-                    RollingFlag = False
-                    return
-                else:
-                    await asyncio.sleep(0.01)
-    else:
-        for i in range(len(CurrentSlots[MenuIndex]) - 18):
-            if not RollingEvent:
-                RollingFlag = False
-                return
-            lcd.cursor_pos = (CursorPos, 1)
-            lcd.write_string(CurrentSlots[MenuIndex][shift:shift + 19])
-            await asyncio.sleep(0.01)
-            shift += 1
-            for times in range(20):
-                if not RollingEvent:
-                    RollingFlag = False
-                    return
-                else:
-                    await asyncio.sleep(0.01)
-    while True:
-        if not RollingEvent:
-            RollingFlag = False
-            return
-        else:
-            await asyncio.sleep(0.01)
-
-
-def ResetRolling(index, row):
-    global RollingEvent, RollingFlag
-    RollingEvent = False
-    while RollingFlag:
-        time.sleep(0.01)
-    RollingFlag = True
-    lcd.cursor_pos = (row, 1)
-    if MenuDeph == 1:
-        lcd.write_string(CurrentSlots[index][0:16] + "  ")
-    else:
-        lcd.write_string(CurrentSlots[index][0:19])
-
-
-def buttonPress(arg):
-    global ButtonEnabled, Wait
-
-    def pressed():
-        global MenuDeph, FMenuDeph, MenuIndex, MenuMaxIndex, MacAddresses, MenuMMIndex, RotateEnabled, ButtonEnabled, Wait, \
-            Scripts, MenuPrDeph, RollingEvent, RollingFlag, Connecting
-
-        if ButtonEnabled and Wait:
-            MenuPrDeph = MenuDeph
-            if RollingEvent:
-                ResetRolling(MenuIndex, CursorPos)
-
-            ButtonEnabled = False
-            RotateEnabled = False
-            # MainMenu
-            if MenuDeph == 0:
-                MenuMMIndex = MenuIndex
-                MenuDeph = 1
-            # ConnectionMenu
-            elif MenuDeph == 1:
-                if MenuIndex == 0:
-                    MenuDeph = 0
-                elif MenuIndex == 1:
-                    if Scripts[MenuMMIndex] != "none":
-                        Stop()
-                    else:
-                        MenuDeph = FMenuDeph
-                elif MenuIndex == 2:
-                    if MacAddresses[MenuMMIndex] == "none":
-                        asyncio.run_coroutine_threadsafe(SetMac(), loop)
-                        while Wait:
-                            time.sleep(0.01)
-                        Wait = True
-                    elif MacAddresses[MenuMMIndex] != "none":
-                        RemoveMac()
-            # FileMenu
-            elif MenuDeph >= 2:
-                if MenuIndex == 0:
-                    FMenuDeph = MenuDeph
-                    MenuDeph = 1
-                else:
-                    FMN()
-
-            if MenuDeph != MenuPrDeph:
-                ResetMenu()
-            else:
-                time.sleep(0.01)
-                ButtonEnabled = True
-                RotateEnabled = True
-        else:
-            return
-
-    async def buttonCheck():
-        if ButtonEnabled and Wait:
-            await asyncio.get_event_loop().run_in_executor(None, pressed)
-
-    asyncio.run_coroutine_threadsafe(buttonCheck(), loop)
-
-
-def valueChanged(value, direction):
-    global MenuPos, CursorPos, MenuMaxPos, MenuIndex, RollingEvent
-    MenuPrIndex = MenuIndex
-    CursorPrPos = CursorPos
-    MenuPrPos = MenuPos
-    if RotateEnabled and Wait:
-        if direction == "R":
-            if MenuIndex != 0:
-                CursorPos -= 1
-                MenuIndex -= 1
-        else:
-            if MenuIndex != MenuMaxIndex:
-                CursorPos += 1
-                MenuIndex += 1
-
-        if CursorPos == -1:
-            CursorPos = 0
-            if MenuPos != 0:
-                MenuPos -= 1
-        elif CursorPos == 4:
-            CursorPos = 3
-            if MenuPos != MenuMaxPos:
-                MenuPos += 1
-        if RollingEvent:
-            ResetRolling(MenuPrIndex, CursorPrPos)
-        if CursorPos != CursorPrPos:
-            Cursor(CursorPrPos)
-        if MenuPos != MenuPrPos:
-            Menu()
-        if MenuDeph <= 1 and len(CurrentSlots[MenuIndex]) >= 16 or MenuDeph >= 2 and len(CurrentSlots[MenuIndex]) >= 19:
-            asyncio.run_coroutine_threadsafe(Rolling(), loop)
-
-
-loop = asyncio.get_event_loop()
 
 if __name__ == "__main__":
+
+    monitor.filter_by('block')
+    observer = pyudev.MonitorObserver(monitor, usb_handler)
+
+
+    lcd.cursor_pos = (1, 0)
+    lcd.write_string("Welcome to GraviHub!\r\n")
+    time.sleep(0.5)
+    lcd.write_string(" loading USB-Drives \r\n")
+    for device in context.list_devices(subsystem='block', DEVTYPE='partition'):
+        print('{0} ({1})'.format(device.device_node, device.get('ID_FS_TYPE')))
+        if 'ID_FS_TYPE' in device:
+            if device.device_node.startswith("/dev/sd"):
+                add_usb(device)
+
+    time.sleep(3)
+    lcd.home()
+    lcd.clear()
+    observer.start()
+    GraviHub.set(info_screen)
+
     try:
-        e1 = Encoder(4, 17, valueChanged)
-
-        GPIO.setup(buttonPin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-        GPIO.add_event_detect(buttonPin, GPIO.RISING, callback=buttonPress, bouncetime=300)
-
-        lcd.create_char(0, arrow)
-        lcd.create_char(1, back_arrow)
-        lcd.create_char(2, no_skript)
-        lcd.create_char(3, skript_running)
-        lcd.create_char(4, folder_char)
-
-        lcd.clear()
-        lcd.cursor_pos = (1, 0)
-        lcd.write_string('Welcome to GraviHub!')
-        lcd.close()
-        ReadMA()
-        time.sleep(3)
-        lcd.clear()
-        Cursor(1)
-        Menu()
-        time.sleep(1)
-        Wait = True
-        asyncio.get_event_loop().run_forever()
+        loop.run_forever()
     except KeyboardInterrupt:
+        for device in context.list_devices(subsystem='block', DEVTYPE='partition'):
+            print('{0} ({1})'.format(device.device_node, device.get('ID_FS_TYPE')))
+            if 'ID_FS_TYPE' in device:
+                if device.device_node.startswith("/dev/sd"):
+                    remove_usb(device)
         lcd.close(clear=True)
         GPIO.cleanup()
         loop.stop()
