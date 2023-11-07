@@ -1,9 +1,7 @@
-import time
-from RPLCD.i2c import CharLCD
+import sys
 import RPi.GPIO as GPIO
-import asyncio
 from gravitraxconnect import gravitrax_bridge as gb
-from RotaryMenu import RotaryMenuClasses
+from RotaryMenu.RotaryMenuClasses import *
 from configparser import ConfigParser
 from pathlib import Path
 import importlib.util
@@ -21,18 +19,12 @@ lcd = CharLCD(i2c_expander=settings["lcd"]["i2c_expander"], address=0x27, port=1
               cols=int(settings["lcd"]["cols"]), rows=int(settings["lcd"]["rows"]),
               dotsize=int(settings["lcd"]["dotsize"]))
 
-# RMC Renaming for better usage
-RotaryMenu = RotaryMenuClasses.RotaryMenu
-MenuMain = RotaryMenuClasses.Main
-MenuSub = RotaryMenuClasses.Sub
-MenuFile = RotaryMenuClasses.File
-DynamicSlot = RotaryMenuClasses.DynamicSlot
-
 # Variables for the Bridges
 bridges_MAC = ["none", "none", "none", "none", "none", "none"]
 bridges = [gb.Bridge(), gb.Bridge(), gb.Bridge(), gb.Bridge(), gb.Bridge(), gb.Bridge()]
 battery_levels = [0, 0, 0, 0, 0, 0]
 scripts = ["none", "none", "none", "none", "none", "none"]
+modules = {}
 bridge_count = 0
 bridge_mode = False
 
@@ -161,6 +153,7 @@ usb_character = (
 connection_index = 0
 
 unnamed_usb_sticks = ["None", "None", "None", "None"]
+pr_slots = []
 
 wait = True
 connection_result = False
@@ -171,8 +164,18 @@ active = False
 
 async def connect(index):
     global wait, connection_result
+
     def disconnect_callback(bridge: gb.Bridge, **kwargs):
-        pass
+        if kwargs.get("user_disconnected"):
+            pass
+        else:
+            if modules[index].__name__ in sys.modules:
+                del sys.modules[modules[index].__name__]
+            del modules[index]
+            bridges_MAC[index] = "none"
+            if connection_index == index:
+                GraviHub.set(connections_menu)
+            print("hahd")
 
     lcd.clear()
     lcd.cursor_pos = (1, 0)
@@ -201,7 +204,6 @@ async def connect(index):
             lcd.cursor_pos = (1, 0)
             lcd.write_string(f"Connected to:\r\n{bridges_MAC[index]}!")
             await asyncio.sleep(3)
-
             wait = False
             connection_result = True
         else:
@@ -210,6 +212,7 @@ async def connect(index):
             lcd.write_string(f"Connecting Failed!")
             await asyncio.sleep(3)
             wait = False
+    print("kakj")
 
 
 async def disconnect(index):
@@ -235,7 +238,6 @@ async def disconnect(index):
         wait = False
 
 
-
 async def return_first_bridge():
     index = 0
     for bride in bridges:
@@ -243,6 +245,7 @@ async def return_first_bridge():
             return index
         else:
             index += 1
+
 
 async def get_battery_levels():
     global battery_levels
@@ -256,17 +259,73 @@ async def get_battery_levels():
             battery_levels[index] = 0
         index += 1
 
+
 # functions
 
+def start_script(execute_file, index):
+    global wait
+
+    async def start():
+        global wait
+        if settings.getboolean("settings", "script_setup"):
+            try:
+                await (modules[index]).setup(bridges[index], bridge_count=bridge_count, wait=wait, lcd=lcd,
+                                             connection_index=connection_index)
+            except Exception as e:
+                print(e)
+        if await bridges[index].notification_enable((modules[index]).notification_callback):
+            pass
+        wait = False
+
+    print(execute_file)
+    spec = importlib.util.spec_from_file_location(execute_file.name, execute_file)
+    print(type(importlib.util.module_from_spec(spec)))
+    modules[index] = importlib.util.module_from_spec(spec)
+    scripts[index] = execute_file.name
+    spec.loader.exec_module(modules[index])
+    print(dir(modules[index]))
+    asyncio.run_coroutine_threadsafe(start(), loop)
+    while wait:
+        time.sleep(0.1)
+        wait = False
+    wait = True
+
+
+def stop_script(index):
+    global wait
+
+    async def stop():
+        global wait
+        if settings.getboolean("settings", "script_shutdown"):
+            try:
+                await (modules[index]).shutdown(bridges[index], bridge_count=bridge_count, wait=wait, lcd=lcd,
+                                                connection_index=connection_index)
+            except Exception as e:
+                print(e)
+        if await bridges[index].notification_disable():
+            pass
+        wait = False
+
+    asyncio.run_coroutine_threadsafe(stop(), loop)
+    while wait:
+        time.sleep(0.1)
+    wait = True
+    if modules[index].__name__ in sys.modules:
+        del sys.modules[modules[index].__name__]
+    del modules[index]
+    scripts[index] = "none"
+
+
 def usb_handler(action, device):
-    global usb_paths
     if 'ID_FS_TYPE' in device:
 
         if action == "add":
             add_usb(device)
 
         if action == "remove":
+
             remove_usb(device)
+
 
 def add_usb(device):
     print(type(device.get('ID_FS_LABEL')))
@@ -298,6 +357,7 @@ def add_usb(device):
         GraviHub.current_menu.return_to_default()
         GraviHub.reset_menu()
 
+
 def remove_usb(device):
     if str(device.get('ID_FS_LABEL')) == "None":
         for i in range(len(unnamed_usb_sticks)):
@@ -314,6 +374,18 @@ def remove_usb(device):
 
     usb_path = default / f"__usb-{name}__"
     os.system(f"sudo umount {device.device_node}")
+    if str(script_selection_menu.current_path).startswith(str(usb_path)):
+        script_selection_menu.return_to_default()
+    index_list = []
+    for key in modules:
+        if str(modules[key].__file__).startswith(str(usb_path)):
+            index_list.append(key)
+    for index in index_list:
+        if modules[index].__name__ in sys.modules:
+            del sys.modules[modules[index].__name__]
+        del modules[index]
+        scripts[index] = "none"
+
     try:
         usb_path.rmdir()
     except FileNotFoundError:
@@ -325,12 +397,15 @@ def remove_usb(device):
         GraviHub.current_menu.return_to_default()
         GraviHub.reset_menu()
 
-def toggle_MAC(index):
+
+def set_mac(index):
     with open("settings.ini", "w") as ini:
-        if settings["connections"][f"c{index}"] == "none":
-            settings.set("connections", f"c{index}", bridges_MAC[index])
-        else:
-            settings.set("connections", f"c{index}", "none")
+        settings.set("connections", f"c{index}", bridges_MAC[index])
+        settings.write(ini)
+
+def del_mac(index):
+    with open("settings.ini", "w") as ini:
+        settings.set("connections", f"c{index}", "none")
         settings.write(ini)
 
 def return_DynamicSlots_to_str(slots: list):
@@ -338,6 +413,7 @@ def return_DynamicSlots_to_str(slots: list):
     for slot in slots:
         return_slots.append(str(slot))
     return return_slots
+
 
 # DynamicSlots Functions
 
@@ -351,14 +427,17 @@ def return_battery_str(index):
     elif 3.0 <= float(battery_levels[index]) <= 3.1:
         return "\x06"
 
+
 def return_setting(tab, setting):
     return settings[tab][setting]
+
 
 def return_connection_name(index):
     if settings["connections"][f"c{index}"] == "none":
         return f"Connect{index + 1}"
     else:
         return settings["connections"][f"c{index}"]
+
 
 def return_script_str(index, return_name=False):
     if return_name:
@@ -372,11 +451,13 @@ def return_script_str(index, return_name=False):
         else:
             return "\x00"
 
+
 def return_script(index):
     if scripts[index] != "none":
-        return f"Stop: {return_script_str(index, return_name=True)}#+#"
+        return f"Stop:#+# {return_script_str(index, return_name=True)}#+#"
     else:
-        return "Start Script#+#\x03"
+        return "#+#Start Script#+#\x03"
+
 
 def return_MAC(index):
     if settings["connections"][f"c{index}"] == "none":
@@ -384,10 +465,14 @@ def return_MAC(index):
     else:
         return "Remove MAC"
 
+
 # Menus
 
 
 def info_screen_callback(callback_type, value):
+    global connection_index
+    if callback_type == "setup":
+        connection_index = 10
     if callback_type == "after_setup":
         lcd.create_char(0, no_script)
         lcd.create_char(1, script_running)
@@ -408,7 +493,8 @@ def info_screen_callback(callback_type, value):
         GraviHub.set(selection_menu)
 
 
-info_screen = MenuMain(["#+##+#"], info_screen_callback,do_setup_callback=True, after_reset_callback=True, custom_cursor=True)
+info_screen = MenuMain(["#+##+#"], info_screen_callback, do_setup_callback=True, after_reset_callback=True,
+                       custom_cursor=True)
 
 selection_menu_slots = ["#+#Info Screen#+#\x03", "#+#Connections#+#\x02", "#+#Bridge Mode#+#[Off]",
                         "#+#Settings#+#\x02", "#+#Manage Files#+#\x02"]
@@ -440,7 +526,6 @@ def selection_menu_callback(callback_type, value):
 
 selection_menu = MenuSub(selection_menu_slots, selection_menu_callback, do_setup_callback=True)
 
-
 connections_menu_slots = ["#+#Main Menu#+#\x02",
                           DynamicSlot("#+#{c}#+#{b}{s}", c=return_connection_name, c_args=(0,),
                                       b=return_battery_str, b_args=(0,), s=return_script_str, s_args=(0,)),
@@ -461,8 +546,8 @@ def connections_menu_callback(callback_type, value):
     global connection_index, wait, connection_result
 
     async def connections_menu_update_handler():
+        global pr_slots
         while GraviHub.current_menu == connections_menu:
-            pr_slots = return_DynamicSlots_to_str(connections_menu_slots)
             await get_battery_levels()
             if pr_slots != return_DynamicSlots_to_str(connections_menu_slots):
                 while GraviHub.wait:
@@ -470,6 +555,7 @@ def connections_menu_callback(callback_type, value):
                 GraviHub.wait = True
                 GraviHub.menu()
                 GraviHub.wait = False
+            pr_slots = return_DynamicSlots_to_str(connections_menu_slots)
             await asyncio.sleep(0.5)
 
     if callback_type == "setup":
@@ -482,6 +568,7 @@ def connections_menu_callback(callback_type, value):
         lcd.create_char(5, battery_medium)
         lcd.create_char(6, battery_full)
         asyncio.run_coroutine_threadsafe(connections_menu_update_handler(), loop)
+        connection_index = 10
     if callback_type == "press":
         if value == 0:
             GraviHub.set(selection_menu)
@@ -504,25 +591,36 @@ def connections_menu_callback(callback_type, value):
 connections_menu = MenuSub(connections_menu_slots, connections_menu_callback, do_setup_callback=True)
 
 bridge_menu_slots = ["#+#Back#+#\x02",
-                     DynamicSlot("#+#{s}", s=return_script, s_args=(connection_index,)),
+                     DynamicSlot("{s}", s=return_script, s_args=(connection_index,)),
                      DynamicSlot("#+#{MAC}#+#", MAC=return_MAC,
                                  MAC_args=(connection_index,)),
                      "#+#Disconnect#+#\x02"]
+
 
 def bridge_menu_callback(callback_type, value):
     global wait, connection_result
     if callback_type == "setup":
         lcd.clear()
         lcd.create_char(3, arrow)
-        bridge_menu_slots[1].function_args["MAC_args"] = (connection_index,)
+        bridge_menu_slots[1].function_args["s_args"] = (connection_index,)
         bridge_menu_slots[2].function_args["MAC_args"] = (connection_index,)
+
+        print(scripts)
+        print(connection_index)
     if callback_type == "press":
         if value == 0:
             GraviHub.set(connections_menu)
         elif value == 1:
-            GraviHub.set(script_selection_menu)
+            if scripts[connection_index] == "none":
+                GraviHub.set(script_selection_menu)
+            else:
+                stop_script(connection_index)
+                GraviHub.update_current_slot()
         elif value == 2:
-            toggle_MAC(connection_index)
+            if settings["connections"][f"c{connection_index}"] == "none":
+                set_mac(connection_index)
+            else:
+                del_mac(connection_index)
             GraviHub.update_current_slot()
         elif value == 3:
             asyncio.run_coroutine_threadsafe(disconnect(connection_index), loop)
@@ -536,12 +634,13 @@ def bridge_menu_callback(callback_type, value):
                 GraviHub.reset_menu()
 
 
-
 bridge_menu = MenuSub(bridge_menu_slots, bridge_menu_callback, do_setup_callback=True)
 
 script_selection_menu_pr_slots = ["#+#Back#+#\x02"]
 
+
 def script_selection_menu_callback(callback_type, value):
+    global wait
     if callback_type == "setup":
         lcd.clear()
         lcd.create_char(0, usb_character)
@@ -553,13 +652,20 @@ def script_selection_menu_callback(callback_type, value):
         if (script_selection_menu.current_path / usb_directory).exists():
             script_selection_menu.move_to_dir(usb_directory)
             GraviHub.reset_menu()
+    if callback_type == "file_press":
+        start_script(value, connection_index)
+        GraviHub.set(bridge_menu)
 
 
 script_selection_menu = MenuFile(default, script_selection_menu_callback, pr_slots=script_selection_menu_pr_slots,
                                  dir_affix="\x01#+#", do_setup_callback=True)
 
-settings_menu_slots = ["#+#Main Menu#+#\x03","#+#Send Signals#+#\x02", "#+#Script Setup#+#[Off]",
-                       "#+#Script Shutdown#+#[Off]", "#+#Remove all MAC#+#", "#+#Disconnect all#+#", ]
+settings_menu_slots = ["#+#Main Menu#+#\x03", "#+#Send Signals#+#\x02",
+                       DynamicSlot("#+#Script Setup#+#[{rs}]", rs=return_setting, rs_args=("settings", "script_setup")),
+                       DynamicSlot("#+#Script Shutdown#+#[{rs}]", rs=return_setting,
+                                   rs_args=("settings", "script_shutdown")),
+                       "#+#Remove all MAC#+#", "#+#Disconnect all#+#", ]
+
 
 def settings_menu_callback(callback_type, value):
     if callback_type == "setup":
@@ -567,6 +673,30 @@ def settings_menu_callback(callback_type, value):
     if callback_type == "press":
         if value == 0:
             GraviHub.set(selection_menu)
+        elif value == 1:
+            pass
+        elif value == 2:
+            with open("settings.ini", "w") as ini:
+                if settings.getboolean("settings", "script_setup"):
+                    settings.set("settings", "script_setup", "Off")
+                else:
+                    settings.set("settings", "script_setup", "On")
+                settings.write(ini)
+            GraviHub.update_current_slot()
+        elif value == 3:
+            with open("settings.ini", "w") as ini:
+                if settings.getboolean("settings", "script_shutdown"):
+                    settings.set("settings", "script_shutdown", "Off")
+                else:
+                    settings.set("settings", "script_shutdown", "On")
+                settings.write(ini)
+            GraviHub.update_current_slot()
+        elif value == 4:
+            for i in range(len(bridges_MAC)):
+                del_mac(i)
+
+
+
 
 settings_menu = MenuSub(settings_menu_slots, settings_menu_callback, do_setup_callback=True)
 
@@ -576,12 +706,10 @@ GraviHub = RotaryMenu(right_pin=encoder_right, left_pin=encoder_left, button_pin
 # menu_update_handler
 
 
-
 if __name__ == "__main__":
 
     monitor.filter_by('block')
     observer = pyudev.MonitorObserver(monitor, usb_handler)
-
 
     lcd.cursor_pos = (1, 0)
     lcd.write_string("Welcome to GraviHub!\r\n")
