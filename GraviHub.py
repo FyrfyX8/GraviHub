@@ -1,9 +1,14 @@
-import sys
-import RPi.GPIO as GPIO
+from RotaryMenu import *
 from gravitraxconnect import gravitrax_bridge as gb
-from RotaryMenu.RotaryMenuClasses import *
+from gravitraxconnect import gravitrax_constants as gc
+from RPLCD.i2c import CharLCD
 from configparser import ConfigParser
 from pathlib import Path
+
+import sys
+import time
+import RPi.GPIO as GPIO
+import asyncio
 import importlib.util
 import pyudev
 import os
@@ -153,11 +158,13 @@ usb_character = (
 connection_index = 0
 
 unnamed_usb_sticks = ["None", "None", "None", "None"]
-pr_slots = []
+selection_check_slots = []
+info_check_slots = []
+info_event_list = []
 
 wait = True
+wait2 = True
 connection_result = False
-active = False
 
 
 # async functions
@@ -169,13 +176,14 @@ async def connect(index):
         if kwargs.get("user_disconnected"):
             pass
         else:
-            if modules[index].__name__ in sys.modules:
-                del sys.modules[modules[index].__name__]
-            del modules[index]
+            if scripts[index] != "none":
+                if modules[index].__name__ in sys.modules:
+                    del sys.modules[modules[index].__name__]
+                del modules[index]
+                scripts[index] = "none"
             bridges_MAC[index] = "none"
             if connection_index == index:
                 GraviHub.set(connections_menu)
-            print("hahd")
 
     lcd.clear()
     lcd.cursor_pos = (1, 0)
@@ -212,7 +220,35 @@ async def connect(index):
             lcd.write_string(f"Connecting Failed!")
             await asyncio.sleep(3)
             wait = False
-    print("kakj")
+
+
+async def lazy_connect(index: int) -> bool:
+    def disconnect_callback(bridge: gb.Bridge, **kwargs):
+        if kwargs.get("user_disconnected"):
+            pass
+        else:
+            if scripts[index] != "none":
+                if modules[index].__name__ in sys.modules:
+                    del sys.modules[modules[index].__name__]
+                del modules[index]
+                scripts[index] = "none"
+            bridges_MAC[index] = "none"
+            if connection_index == index:
+                GraviHub.set(connections_menu)
+
+    if settings["connections"][f"c{index}"] == "none":
+        if await bridges[index].connect(timeout=5, dc_callback=disconnect_callback):
+            bridges_MAC[index] = bridges[index].get_address()
+            return True
+        else:
+            return False
+    else:
+        if await bridges[index].connect(timeout=5, dc_callback=disconnect_callback, by_name=False,
+                                        name_or_addr=settings['connections'][f'c{index}']):
+            bridges_MAC[index] = bridges[index].get_address()
+            return True
+        else:
+            return False
 
 
 async def disconnect(index):
@@ -238,26 +274,66 @@ async def disconnect(index):
         wait = False
 
 
-async def return_first_bridge():
-    index = 0
-    for bride in bridges:
-        if await bride.is_connected():
-            return index
+async def toggle_bridge_mode(set_mode: bool) -> bool:
+    global bridge_mode
+    index = await return_first_bridge(True)
+    if index is not False:
+        if set_mode:
+            await bridges[index].start_bridge_mode()
+            bridge_mode = True
+            return True
         else:
-            index += 1
+            await bridges[index].stop_bridge_mode()
+            bridge_mode = False
+            return True
+
+    else:
+        return False
+
+
+async def disconnect_all():
+    global wait2, connection_result
+    for i, bridge in enumerate(bridges):
+        if await bridge.is_connected():
+            while not connection_result:
+                await disconnect(i)
+            connection_result = False
+    wait2 = False
+
+
+async def return_first_bridge(connected: bool) -> int | bool:
+    for i, bridge in enumerate(bridges):
+        print("wow")
+        if await bridge.is_connected() is connected:
+            print("is_connected")
+            return i
+    return False
+
+
+async def auto_connect_handler():
+    print("started")
+    index = 0
+    while settings.getboolean("settings", "auto_connect"):
+        if settings.getboolean("settings", "auto_connect") is False:
+            break
+        if await bridges[index].is_connected() is False:
+            if await lazy_connect(index):
+                pass
+        else:
+            index = await return_first_bridge(False)
+            index = index if type(int) else 0
+    print("ended")
 
 
 async def get_battery_levels():
     global battery_levels
-    index = 0
-    for bridge in bridges:
+    for i, bridge in enumerate(bridges):
         if await bridge.is_connected():
-            battery_levels[index] = await bridge.request_battery()
-            if battery_levels[index] is None:
-                battery_levels[index] = 0
+            battery_levels[i] = await bridge.request_battery()
+            if battery_levels[i] is None:
+                battery_levels[i] = 0
         else:
-            battery_levels[index] = 0
-        index += 1
+            battery_levels[i] = 0
 
 
 # functions
@@ -403,12 +479,14 @@ def set_mac(index):
         settings.set("connections", f"c{index}", bridges_MAC[index])
         settings.write(ini)
 
+
 def del_mac(index):
     with open("settings.ini", "w") as ini:
         settings.set("connections", f"c{index}", "none")
         settings.write(ini)
 
-def return_DynamicSlots_to_str(slots: list):
+
+def return_dynamic_slots_to_str(slots: list):
     return_slots = []
     for slot in slots:
         return_slots.append(str(slot))
@@ -459,7 +537,7 @@ def return_script(index):
         return "#+#Start Script#+#\x03"
 
 
-def return_MAC(index):
+def return_mac(index):
     if settings["connections"][f"c{index}"] == "none":
         return "Set MAC"
     else:
@@ -469,7 +547,7 @@ def return_MAC(index):
 # Menus
 
 
-def info_screen_callback(callback_type, value):
+def info_screen_callback(callback_type, value, menu):
     global connection_index
     if callback_type == "setup":
         connection_index = 10
@@ -490,7 +568,7 @@ def info_screen_callback(callback_type, value):
             lcd.write_string("bridge Mode: Off")
     if callback_type == "press":
         lcd.clear()
-        GraviHub.set(selection_menu)
+        menu.set(selection_menu)
 
 
 info_screen = MenuMain(["#+##+#"], info_screen_callback, do_setup_callback=True, after_reset_callback=True,
@@ -500,28 +578,53 @@ selection_menu_slots = ["#+#Info Screen#+#\x03", "#+#Connections#+#\x02", "#+#Br
                         "#+#Settings#+#\x02", "#+#Manage Files#+#\x02"]
 
 
-def selection_menu_callback(callback_type, value):
-    global bridge_mode
+def selection_menu_callback(callback_type, value, menu):
+    global wait
     if callback_type == "setup":
         lcd.clear()
         lcd.create_char(2, arrow)
         lcd.create_char(3, back_arrow)
     if callback_type == "press":
         if value == 0:
-            GraviHub.set(info_screen)
+            menu.set(info_screen)
         elif value == 1:
-            GraviHub.set(connections_menu)
+            menu.set(connections_menu)
         elif value == 2:
-            if bridge_mode:
-                selection_menu.change_slot(2, "#+#Bridge Mode#+#[Off]")
-                bridge_mode = False
-            else:
-                selection_menu.change_slot(2, "#+#Bridge Mode#+#[On]")
-                bridge_mode = True
-            print(selection_menu.slots)
-            GraviHub.update_current_slot()
+
+            async def toggle_mode():
+                global wait
+                if bridge_mode:
+                    if await toggle_bridge_mode(False):
+                        selection_menu.change_slot(2, "#+#Bridge Mode#+#[Off]")
+                        menu.update_current_slot()
+                    else:
+                        lcd.clear()
+                        lcd.cursor_pos = (1, 0)
+                        lcd.write_string("No Bridge Connected!")
+                        time.sleep(2)
+                        lcd.clear()
+                        menu.reset_menu()
+
+                else:
+                    if await toggle_bridge_mode(True):
+                        selection_menu.change_slot(2, "#+#Bridge Mode#+#[On]")
+                        menu.update_current_slot()
+                    else:
+                        lcd.clear()
+                        lcd.cursor_pos = (1, 0)
+                        lcd.write_string("No Bridge Connected!")
+                        time.sleep(2)
+                        lcd.clear()
+                        menu.reset_menu()
+                wait = False
+
+            asyncio.run_coroutine_threadsafe(toggle_mode(), loop)
+            while wait:
+                time.sleep(0.01)
+            wait = True
+
         elif value == 3:
-            GraviHub.set(settings_menu)
+            menu.set(settings_menu)
 
 
 selection_menu = MenuSub(selection_menu_slots, selection_menu_callback, do_setup_callback=True)
@@ -542,20 +645,20 @@ connections_menu_slots = ["#+#Main Menu#+#\x02",
                           ]
 
 
-def connections_menu_callback(callback_type, value):
+def connections_menu_callback(callback_type, value, menu):
     global connection_index, wait, connection_result
 
     async def connections_menu_update_handler():
-        global pr_slots
-        while GraviHub.current_menu == connections_menu:
+        global selection_check_slots
+        while menu.current_menu == connections_menu:
             await get_battery_levels()
-            if pr_slots != return_DynamicSlots_to_str(connections_menu_slots):
-                while GraviHub.wait:
+            if selection_check_slots != return_dynamic_slots_to_str(connections_menu_slots):
+                while menu.wait:
                     await asyncio.sleep(0.01)
-                GraviHub.wait = True
-                GraviHub.menu()
-                GraviHub.wait = False
-            pr_slots = return_DynamicSlots_to_str(connections_menu_slots)
+                menu.wait = True
+                menu.menu()
+                menu.wait = False
+            selection_check_slots = return_dynamic_slots_to_str(connections_menu_slots)
             await asyncio.sleep(0.5)
 
     if callback_type == "setup":
@@ -571,7 +674,7 @@ def connections_menu_callback(callback_type, value):
         connection_index = 10
     if callback_type == "press":
         if value == 0:
-            GraviHub.set(selection_menu)
+            menu.set(selection_menu)
         if value > 0:
             connection_index = value - 1
             if bridges_MAC[connection_index] == "none":
@@ -581,23 +684,23 @@ def connections_menu_callback(callback_type, value):
                 wait = True
                 if connection_result:
                     connection_result = False
-                    GraviHub.set(bridge_menu)
+                    menu.set(bridge_menu)
                 else:
-                    GraviHub.reset_menu()
+                    menu.reset_menu()
             else:
-                GraviHub.set(bridge_menu)
+                menu.set(bridge_menu)
 
 
 connections_menu = MenuSub(connections_menu_slots, connections_menu_callback, do_setup_callback=True)
 
 bridge_menu_slots = ["#+#Back#+#\x02",
                      DynamicSlot("{s}", s=return_script, s_args=(connection_index,)),
-                     DynamicSlot("#+#{MAC}#+#", MAC=return_MAC,
+                     DynamicSlot("#+#{MAC}#+#", MAC=return_mac,
                                  MAC_args=(connection_index,)),
                      "#+#Disconnect#+#\x02"]
 
 
-def bridge_menu_callback(callback_type, value):
+def bridge_menu_callback(callback_type, value, menu):
     global wait, connection_result
     if callback_type == "setup":
         lcd.clear()
@@ -609,19 +712,19 @@ def bridge_menu_callback(callback_type, value):
         print(connection_index)
     if callback_type == "press":
         if value == 0:
-            GraviHub.set(connections_menu)
+            menu.set(connections_menu)
         elif value == 1:
             if scripts[connection_index] == "none":
-                GraviHub.set(script_selection_menu)
+                menu.set(script_selection_menu)
             else:
                 stop_script(connection_index)
-                GraviHub.update_current_slot()
+                menu.update_current_slot()
         elif value == 2:
             if settings["connections"][f"c{connection_index}"] == "none":
                 set_mac(connection_index)
             else:
                 del_mac(connection_index)
-            GraviHub.update_current_slot()
+            menu.update_current_slot()
         elif value == 3:
             asyncio.run_coroutine_threadsafe(disconnect(connection_index), loop)
             while wait:
@@ -629,9 +732,9 @@ def bridge_menu_callback(callback_type, value):
             wait = True
             if connection_result:
                 connection_result = False
-                GraviHub.set(connections_menu)
+                menu.set(connections_menu)
             else:
-                GraviHub.reset_menu()
+                menu.reset_menu()
 
 
 bridge_menu = MenuSub(bridge_menu_slots, bridge_menu_callback, do_setup_callback=True)
@@ -639,7 +742,7 @@ bridge_menu = MenuSub(bridge_menu_slots, bridge_menu_callback, do_setup_callback
 script_selection_menu_pr_slots = ["#+#Back#+#\x02"]
 
 
-def script_selection_menu_callback(callback_type, value):
+def script_selection_menu_callback(callback_type, value, menu):
     global wait
     if callback_type == "setup":
         lcd.clear()
@@ -648,13 +751,13 @@ def script_selection_menu_callback(callback_type, value):
     if callback_type == "press":
         usb_directory = f"__usb-{script_selection_menu.slots[value].split('#+#', 2)[1]}__"
         if value == 0:
-            GraviHub.set(bridge_menu)
+            menu.set(bridge_menu)
         if (script_selection_menu.current_path / usb_directory).exists():
             script_selection_menu.move_to_dir(usb_directory)
-            GraviHub.reset_menu()
+            menu.reset_menu()
     if callback_type == "file_press":
         start_script(value, connection_index)
-        GraviHub.set(bridge_menu)
+        menu.set(bridge_menu)
 
 
 script_selection_menu = MenuFile(default, script_selection_menu_callback, pr_slots=script_selection_menu_pr_slots,
@@ -664,15 +767,17 @@ settings_menu_slots = ["#+#Main Menu#+#\x03", "#+#Send Signals#+#\x02",
                        DynamicSlot("#+#Script Setup#+#[{rs}]", rs=return_setting, rs_args=("settings", "script_setup")),
                        DynamicSlot("#+#Script Shutdown#+#[{rs}]", rs=return_setting,
                                    rs_args=("settings", "script_shutdown")),
+                       DynamicSlot("#+#Auto Connect#+#[{rs}]", rs=return_setting, rs_args=("settings", "auto_connect")),
                        "#+#Remove all MAC#+#", "#+#Disconnect all#+#", ]
 
 
-def settings_menu_callback(callback_type, value):
+def settings_menu_callback(callback_type, value, menu):
+    global wait2
     if callback_type == "setup":
         pass
     if callback_type == "press":
         if value == 0:
-            GraviHub.set(selection_menu)
+            menu.set(selection_menu)
         elif value == 1:
             pass
         elif value == 2:
@@ -682,7 +787,7 @@ def settings_menu_callback(callback_type, value):
                 else:
                     settings.set("settings", "script_setup", "On")
                 settings.write(ini)
-            GraviHub.update_current_slot()
+            menu.update_current_slot()
         elif value == 3:
             with open("settings.ini", "w") as ini:
                 if settings.getboolean("settings", "script_shutdown"):
@@ -690,12 +795,25 @@ def settings_menu_callback(callback_type, value):
                 else:
                     settings.set("settings", "script_shutdown", "On")
                 settings.write(ini)
-            GraviHub.update_current_slot()
+            menu.update_current_slot()
         elif value == 4:
+            with open("settings.ini", "w") as ini:
+                if settings.getboolean("settings", "auto_connect"):
+                    settings.set("settings", "auto_connect", "Off")
+                else:
+                    settings.set("settings", "auto_connect", "On")
+                    asyncio.run_coroutine_threadsafe(auto_connect_handler(), loop)
+                settings.write(ini)
+            menu.update_current_slot()
+        elif value == 5:
             for i in range(len(bridges_MAC)):
                 del_mac(i)
-
-
+        elif value == 6:
+            asyncio.run_coroutine_threadsafe(disconnect_all(), loop)
+            while wait2:
+                time.sleep(0.01)
+            wait2 = True
+            menu.reset_menu()
 
 
 settings_menu = MenuSub(settings_menu_slots, settings_menu_callback, do_setup_callback=True)
@@ -737,6 +855,9 @@ if __name__ == "__main__":
     lcd.home()
     lcd.clear()
     observer.start()
+
+    if settings.getboolean("settings", "auto_connect"):
+        asyncio.run_coroutine_threadsafe(auto_connect_handler(), loop)
 
     GraviHub.set(info_screen)
 
