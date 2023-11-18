@@ -157,8 +157,7 @@ usb_character = (
 
 connection_index = 0
 
-unnamed_usb_sticks = ["None", "None", "None", "None"]
-selection_check_slots = []
+connection_check_slots = []
 info_check_slots = []
 info_event_list = []
 
@@ -169,8 +168,9 @@ connection_result = False
 
 # async functions
 
+
 async def connect(index):
-    global wait, connection_result
+    global wait, connection_result, connection_index
 
     def disconnect_callback(bridge: gb.Bridge, **kwargs):
         if kwargs.get("user_disconnected"):
@@ -182,7 +182,9 @@ async def connect(index):
                 del modules[index]
                 scripts[index] = "none"
             bridges_MAC[index] = "none"
-            if connection_index == index:
+            if GraviHub.current_menu == info_screen:
+                info_event_list.append(f"C{index + 1} disconnected!")
+            if connection_index == index and GraviHub.current_menu in [bridge_menu, script_selection_menu]:
                 GraviHub.set(connections_menu)
 
     lcd.clear()
@@ -191,6 +193,11 @@ async def connect(index):
         lcd.write_string("Connecting to:\r\nBridge...")
         if await bridges[index].connect(timeout=25, dc_callback=disconnect_callback):
             bridges_MAC[index] = bridges[index].get_address()
+            for i in range(6):
+                if settings["connections"][f"c{i}"] == bridges_MAC[index]:
+                    bridges_MAC[index], bridges_MAC[i] = bridges_MAC[i], bridges_MAC[index]
+                    bridges[index], bridges[i] = bridges[i], bridges[index]
+                    index = i
             lcd.clear()
             lcd.cursor_pos = (1, 0)
             lcd.write_string(f"Connected to:\r\n{bridges_MAC[index]}!")
@@ -223,6 +230,9 @@ async def connect(index):
 
 
 async def lazy_connect(index: int) -> bool:
+    global connection_index
+    send = False
+
     def disconnect_callback(bridge: gb.Bridge, **kwargs):
         if kwargs.get("user_disconnected"):
             pass
@@ -233,12 +243,23 @@ async def lazy_connect(index: int) -> bool:
                 del modules[index]
                 scripts[index] = "none"
             bridges_MAC[index] = "none"
-            if connection_index == index:
+            if GraviHub.current_menu == info_screen:
+                info_event_list.append(f"C{index + 1} disconnected!")
+            if connection_index == index and GraviHub.current_menu in [bridge_menu, script_selection_menu]:
                 GraviHub.set(connections_menu)
 
     if settings["connections"][f"c{index}"] == "none":
         if await bridges[index].connect(timeout=5, dc_callback=disconnect_callback):
             bridges_MAC[index] = bridges[index].get_address()
+            for i in range(6):
+                if settings["connections"][f"c{i}"] == bridges_MAC[index]:
+                    bridges_MAC[index], bridges_MAC[i] = bridges_MAC[i], bridges_MAC[index]
+                    bridges[index], bridges[i] = bridges[i], bridges[index]
+                    connection_index = i
+                    index = i
+                if GraviHub.current_menu == info_screen and not send:
+                    send = True
+                    info_event_list.append(f"C{index + 1} connected!")
             return True
         else:
             return False
@@ -246,6 +267,8 @@ async def lazy_connect(index: int) -> bool:
         if await bridges[index].connect(timeout=5, dc_callback=disconnect_callback, by_name=False,
                                         name_or_addr=settings['connections'][f'c{index}']):
             bridges_MAC[index] = bridges[index].get_address()
+            if GraviHub.current_menu == info_screen:
+                info_event_list.append(f"C{index} connected!")
             return True
         else:
             return False
@@ -261,17 +284,36 @@ async def disconnect(index):
         lcd.cursor_pos = (1, 0)
         lcd.write_string(f"Disconnected from:\r\n{bridges_MAC[index]}!")
         bridges_MAC[index] = "none"
-        scripts[index] = "none"
+        if scripts[index] != "none":
+            if modules[index].__name__ in sys.modules:
+                del sys.modules[modules[index].__name__]
+            del modules[index]
+            scripts[index] = "none"
         await get_battery_levels()
         await asyncio.sleep(3)
         wait = False
         connection_result = True
     else:
+        bridges_MAC[index] = bridges[index].get_address()
         lcd.clear()
         lcd.cursor_pos = (1, 0)
         lcd.write_string(f"Disconnecting Failed")
         await asyncio.sleep(3)
         wait = False
+
+
+async def lazy_disconnect(index):
+    if await bridges[index].disconnect(timeout=5):
+        bridges_MAC[index] = "none"
+        if scripts[index] != "none":
+            if modules[index].__name__ in sys.modules:
+                del sys.modules[modules[index].__name__]
+            del modules[index]
+            scripts[index] = "none"
+        return True
+    else:
+        bridges_MAC[index] = bridges[index].get_address()
+        return False
 
 
 async def toggle_bridge_mode(set_mode: bool) -> bool:
@@ -293,36 +335,24 @@ async def toggle_bridge_mode(set_mode: bool) -> bool:
 
 async def disconnect_all():
     global wait2, connection_result
+    lcd.clear()
+    lcd.cursor_pos = (1, 0)
+    lcd.write_string("Disconnecting All!")
     for i, bridge in enumerate(bridges):
         if await bridge.is_connected():
-            while not connection_result:
-                await disconnect(i)
-            connection_result = False
+            while not await lazy_disconnect(i):
+                time.sleep(0.5)
+    lcd.cursor_pos = (1, 0)
+    lcd.write_string("Done!               ")
+    time.sleep(2)
     wait2 = False
 
 
 async def return_first_bridge(connected: bool) -> int | bool:
     for i, bridge in enumerate(bridges):
-        print("wow")
         if await bridge.is_connected() is connected:
-            print("is_connected")
             return i
     return False
-
-
-async def auto_connect_handler():
-    print("started")
-    index = 0
-    while settings.getboolean("settings", "auto_connect"):
-        if settings.getboolean("settings", "auto_connect") is False:
-            break
-        if await bridges[index].is_connected() is False:
-            if await lazy_connect(index):
-                pass
-        else:
-            index = await return_first_bridge(False)
-            index = index if type(int) else 0
-    print("ended")
 
 
 async def get_battery_levels():
@@ -406,19 +436,11 @@ def usb_handler(action, device):
 def add_usb(device):
     print(type(device.get('ID_FS_LABEL')))
     if str(device.get('ID_FS_LABEL')) == "None":
-        for i in range(len(unnamed_usb_sticks)):
-            if unnamed_usb_sticks[i] == "None":
-                unnamed_usb_sticks[i] = device.device_node
-                name = f"USB Drive {i + 1}"
-                break
+        name = f"USB Drive"
     else:
-        for i in range(len(unnamed_usb_sticks), 0):
-            if unnamed_usb_sticks[i] == "None":
-                unnamed_usb_sticks[i] = device.device_node
-                break
         name = device.get('ID_FS_LABEL')
 
-    usb_path = default / f"__usb-{name}__"
+    usb_path = default / f"__usb-{name}_{device.device_node.replace('/', '_')}__"
     mount_path = str(usb_path).replace(' ', '\\ ')
     try:
         usb_path.mkdir()
@@ -426,7 +448,10 @@ def add_usb(device):
         pass
     print(f"sudo mount {device.device_node} {usb_path}")
     os.system(f"sudo mount {device.device_node} {mount_path}")
-    script_selection_menu.fmd0_slots.insert(script_selection_menu.pr_slots_last_index, f"\x00#+#{name}#+#")
+    script_selection_menu.fmd0_slots.insert(script_selection_menu.pr_slots_last_index,
+                                            f"\x00#+#{name}#+##+#{device.device_node.replace('/', '_')}")
+    if GraviHub.current_menu == info_screen:
+        info_event_list.append(f"added USB: {name}")
     if isinstance(GraviHub.current_menu, MenuFile):
         while GraviHub.wait:
             time.sleep(0.01)
@@ -436,19 +461,12 @@ def add_usb(device):
 
 def remove_usb(device):
     if str(device.get('ID_FS_LABEL')) == "None":
-        for i in range(len(unnamed_usb_sticks)):
-            if unnamed_usb_sticks[i] == device.device_node:
-                unnamed_usb_sticks[i] = "None"
-                name = f"USB Drive {i + 1}"
-                break
+        name = f"USB Drive"
+
     else:
-        for i in range(len(unnamed_usb_sticks)):
-            if unnamed_usb_sticks[i] == device.device_node:
-                unnamed_usb_sticks[i] = "None"
-                break
         name = device.get('ID_FS_LABEL')
 
-    usb_path = default / f"__usb-{name}__"
+    usb_path = default / f"__usb-{name}_{device.device_node.replace('/', '_')}__"
     os.system(f"sudo umount {device.device_node}")
     if str(script_selection_menu.current_path).startswith(str(usb_path)):
         script_selection_menu.return_to_default()
@@ -466,7 +484,9 @@ def remove_usb(device):
         usb_path.rmdir()
     except FileNotFoundError:
         pass
-    script_selection_menu.fmd0_slots.remove(f"\x00#+#{name}#+#")
+    script_selection_menu.fmd0_slots.remove(f"\x00#+#{name}#+##+#{device.device_node.replace('/', '_')}")
+    if GraviHub.current_menu == info_screen:
+        info_event_list.append(f"removed USB: {name}")
     if isinstance(GraviHub.current_menu, MenuFile):
         while GraviHub.wait:
             time.sleep(0.01)
@@ -537,21 +557,87 @@ def return_script(index):
         return "#+#Start Script#+#\x03"
 
 
-def return_mac(index):
+def return_mac_setting(index):
     if settings["connections"][f"c{index}"] == "none":
         return "Set MAC"
     else:
         return "Remove MAC"
 
 
+def return_mac_str(index):
+    return "/" if settings["connections"][f"c{index}"] == "none" else "M"
+
+
 # Menus
 
 
 def info_screen_callback(callback_type, value, menu):
-    global connection_index
+    global connection_index, info_event_list
     if callback_type == "setup":
+        async def auto_connect_handler():
+            shift = 0
+            while settings.getboolean("settings", "auto_connect") and menu.current_menu == info_screen:
+                index = await return_first_bridge(False) + shift
+                if settings.getboolean("settings", "auto_connect") is False or shift == 6:
+                    break
+                if await bridges[index].is_connected():
+                    shift += 1
+                else:
+                    if await lazy_connect(index):
+                        shift = 0
+                    elif await lazy_connect(index) is False and settings["connections"][f"c{index}"] != "none":
+                        shift += 1
+
+        if settings.getboolean("settings", "auto_connect"):
+            asyncio.run_coroutine_threadsafe(auto_connect_handler(), loop)
         connection_index = 10
+        info_event_list = []
     if callback_type == "after_setup":
+        async def info_screen_updater():
+            global info_check_slots, info_event_list
+            info_countdown = 0
+            shift = 0
+            current_info_event = ""
+            current_info_event_str = ""
+            info_check_slots = []
+            info = ""
+            while menu.current_menu == info_screen:
+                lcd.home()
+                await get_battery_levels()
+                updated_slots = []
+                for i in range(6):
+                    info += f"C{i + 1}{return_battery_str(i)}{return_script_str(i)}{return_mac_str(i)}"
+                    info += "\r\n" if i == 2 or i == 5 else "  "
+                    updated_slots.append(info)
+                    info = ""
+                if info_countdown == 0 and info_event_list:
+                    pop = info_event_list.pop(0)
+                    for i, entry in enumerate(info_event_list):
+                        if entry == pop:
+                            del info_event_list[i]
+                    current_info_event = f"{' '*20}{pop}{' '* 2}"
+                    current_info_event_str = current_info_event[:20]
+                    shift = 0
+                    info_countdown = len(current_info_event)
+                elif info_countdown > 0:
+                    current_info_event_str = current_info_event[0 + shift: 20 + shift]
+                    shift += 1
+                    info_countdown -= 1
+                elif not info_event_list:
+                    current_info_event_str = "GraviHub idle..."
+                updated_slots.append(current_info_event_str + "\r\n")
+                if info_check_slots != updated_slots:
+                    while menu.wait:
+                        await asyncio.sleep(0.01)
+                    if menu.current_menu != info_screen:
+                        break
+                    menu.wait = True
+                    for entry in updated_slots:
+                        lcd.write_string(entry)
+                    menu.wait = False
+                info_check_slots = updated_slots
+                await asyncio.sleep(0.1)
+
         lcd.create_char(0, no_script)
         lcd.create_char(1, script_running)
         lcd.create_char(3, battery_empty)
@@ -559,13 +645,7 @@ def info_screen_callback(callback_type, value, menu):
         lcd.create_char(5, battery_medium)
         lcd.create_char(6, battery_full)
         lcd.home()
-        lcd.write_string("C1\x03\x00/  C2\x03\x00/  C3\x03\x00/ \r\n" +
-                         "C4\x03\x00/  C5\x03\x00/  C6\x03\x00/ \r\n" +
-                         "GraviHub Idle.\r\n")
-        if bridge_mode:
-            lcd.write_string("Bridge Mode: On")
-        else:
-            lcd.write_string("bridge Mode: Off")
+        asyncio.run_coroutine_threadsafe(info_screen_updater(), loop)
     if callback_type == "press":
         lcd.clear()
         menu.set(selection_menu)
@@ -649,16 +729,17 @@ def connections_menu_callback(callback_type, value, menu):
     global connection_index, wait, connection_result
 
     async def connections_menu_update_handler():
-        global selection_check_slots
+        global connection_check_slots
         while menu.current_menu == connections_menu:
             await get_battery_levels()
-            if selection_check_slots != return_dynamic_slots_to_str(connections_menu_slots):
+            updated_slots = return_dynamic_slots_to_str(connections_menu_slots)
+            if connection_check_slots != updated_slots:
                 while menu.wait:
                     await asyncio.sleep(0.01)
                 menu.wait = True
                 menu.menu()
                 menu.wait = False
-            selection_check_slots = return_dynamic_slots_to_str(connections_menu_slots)
+            connection_check_slots = updated_slots
             await asyncio.sleep(0.5)
 
     if callback_type == "setup":
@@ -675,7 +756,7 @@ def connections_menu_callback(callback_type, value, menu):
     if callback_type == "press":
         if value == 0:
             menu.set(selection_menu)
-        if value > 0:
+        if 1 <= value <= 6:
             connection_index = value - 1
             if bridges_MAC[connection_index] == "none":
                 asyncio.run_coroutine_threadsafe(connect(connection_index), loop)
@@ -695,7 +776,7 @@ connections_menu = MenuSub(connections_menu_slots, connections_menu_callback, do
 
 bridge_menu_slots = ["#+#Back#+#\x02",
                      DynamicSlot("{s}", s=return_script, s_args=(connection_index,)),
-                     DynamicSlot("#+#{MAC}#+#", MAC=return_mac,
+                     DynamicSlot("#+#{MAC}#+#", MAC=return_mac_setting,
                                  MAC_args=(connection_index,)),
                      "#+#Disconnect#+#\x02"]
 
@@ -749,12 +830,14 @@ def script_selection_menu_callback(callback_type, value, menu):
         lcd.create_char(0, usb_character)
         lcd.create_char(1, folder_char)
     if callback_type == "press":
-        usb_directory = f"__usb-{script_selection_menu.slots[value].split('#+#', 2)[1]}__"
         if value == 0:
             menu.set(bridge_menu)
-        if (script_selection_menu.current_path / usb_directory).exists():
-            script_selection_menu.move_to_dir(usb_directory)
-            menu.reset_menu()
+        elif script_selection_menu.slots[value].startswith("\x00"):
+            slot = script_selection_menu.slots[value].split('#+#')
+            usb_directory = f"__usb-{slot[1]}_{slot[3]}__"
+            if (script_selection_menu.current_path / usb_directory).exists():
+                script_selection_menu.move_to_dir(usb_directory)
+                menu.reset_menu()
     if callback_type == "file_press":
         start_script(value, connection_index)
         menu.set(bridge_menu)
@@ -802,7 +885,6 @@ def settings_menu_callback(callback_type, value, menu):
                     settings.set("settings", "auto_connect", "Off")
                 else:
                     settings.set("settings", "auto_connect", "On")
-                    asyncio.run_coroutine_threadsafe(auto_connect_handler(), loop)
                 settings.write(ini)
             menu.update_current_slot()
         elif value == 5:
@@ -825,43 +907,37 @@ GraviHub = RotaryMenu(right_pin=encoder_right, left_pin=encoder_left, button_pin
 
 
 if __name__ == "__main__":
+    try:
+        monitor.filter_by('block')
+        observer = pyudev.MonitorObserver(monitor, usb_handler)
 
-    monitor.filter_by('block')
-    observer = pyudev.MonitorObserver(monitor, usb_handler)
-
-    lcd.cursor_pos = (1, 0)
-    lcd.write_string("Welcome to GraviHub!\r\n")
-    time.sleep(0.5)
-    loading_usb = 0
-    for device in context.list_devices(subsystem='block', DEVTYPE='partition'):
-        print('{0} ({1})'.format(device.device_node, device.get('ID_FS_TYPE')))
-        if 'ID_FS_TYPE' in device:
-            if device.device_node.startswith("/dev/sd"):
-                loading_usb += 1
-    if loading_usb <= 0:
-        pass
-    else:
-        if loading_usb == 1:
-            lcd.write_string("loading 1 USB-Drive\r\n")
-        else:
-            lcd.write_string(f"loading {loading_usb} USB-Drives\r\n")
+        lcd.cursor_pos = (1, 0)
+        lcd.write_string("Welcome to GraviHub!\r\n")
+        time.sleep(0.5)
+        loading_usb = 0
         for device in context.list_devices(subsystem='block', DEVTYPE='partition'):
             print('{0} ({1})'.format(device.device_node, device.get('ID_FS_TYPE')))
             if 'ID_FS_TYPE' in device:
                 if device.device_node.startswith("/dev/sd"):
-                    add_usb(device)
+                    loading_usb += 1
+        if loading_usb <= 0:
+            pass
+        else:
+            if loading_usb == 1:
+                lcd.write_string("loading 1 USB-Drive\r\n")
+            else:
+                lcd.write_string(f"loading {loading_usb} USB-Drives\r\n")
+            for device in context.list_devices(subsystem='block', DEVTYPE='partition'):
+                print('{0} ({1})'.format(device.device_node, device.get('ID_FS_TYPE')))
+                if 'ID_FS_TYPE' in device:
+                    if device.device_node.startswith("/dev/sd"):
+                        add_usb(device)
 
-    time.sleep(3)
-    lcd.home()
-    lcd.clear()
-    observer.start()
-
-    if settings.getboolean("settings", "auto_connect"):
-        asyncio.run_coroutine_threadsafe(auto_connect_handler(), loop)
-
-    GraviHub.set(info_screen)
-
-    try:
+        time.sleep(3)
+        lcd.home()
+        lcd.clear()
+        observer.start()
+        GraviHub.set()
         loop.run_forever()
     except KeyboardInterrupt:
         for device in context.list_devices(subsystem='block', DEVTYPE='partition'):
