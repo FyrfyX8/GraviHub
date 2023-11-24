@@ -7,6 +7,7 @@ from pathlib import Path
 
 import sys
 import time
+import requests
 import RPi.GPIO as GPIO
 import asyncio
 import importlib.util
@@ -156,14 +157,27 @@ usb_character = (
 # other variables
 
 connection_index = 0
+signal_status = 0
+signal_stone = 0
+signal_colour = 0
+signal_count = 1
+signal_gap_step = 0
 
+signal_gap = 0.0
+
+signal_status_list = ["all", "starter", "switch", "bridge", "sound", "lever"]
+signal_stone_list = ["trigger", "finish", "starter", "controller", "bridge"]
+signal_gap_step_list = [0.01, 0.05, 0.1, 0.5, 1.0]
 connection_check_slots = []
 info_check_slots = []
 info_event_list = []
+usb_slots = []
 
+signal_sending = False
 wait = True
 wait2 = True
 connection_result = False
+update_available = False
 
 
 # async functions
@@ -268,7 +282,7 @@ async def lazy_connect(index: int) -> bool:
                                         name_or_addr=settings['connections'][f'c{index}']):
             bridges_MAC[index] = bridges[index].get_address()
             if GraviHub.current_menu == info_screen:
-                info_event_list.append(f"C{index} connected!")
+                info_event_list.append(f"C{index + 1} connected!")
             return True
         else:
             return False
@@ -316,6 +330,22 @@ async def lazy_disconnect(index):
         return False
 
 
+async def send_signal():
+    try:
+        global signal_sending
+        signal_sending = True
+        if await bridges[await return_first_bridge(True)].send_periodic(
+                stone=gc.DICT_STONE[signal_stone_list[signal_stone]],
+                status=gc.DICT_STATUS[signal_status_list[
+                    signal_status].upper()],
+                color_channel=signal_colour, count=signal_count,
+                gap=signal_gap):
+            signal_sending = False
+        signal_sending = False
+    except Exception as e:
+        signal_sending = False
+
+
 async def toggle_bridge_mode(set_mode: bool) -> bool:
     global bridge_mode
     index = await return_first_bridge(True)
@@ -350,8 +380,12 @@ async def disconnect_all():
 
 async def return_first_bridge(connected: bool) -> int | bool:
     for i, bridge in enumerate(bridges):
-        if await bridge.is_connected() is connected:
-            return i
+        if connected:
+            if await bridge.is_connected():
+                return i
+        else:
+            if not await bridge.is_connected():
+                return i
     return False
 
 
@@ -429,7 +463,6 @@ def usb_handler(action, device):
             add_usb(device)
 
         if action == "remove":
-
             remove_usb(device)
 
 
@@ -448,8 +481,7 @@ def add_usb(device):
         pass
     print(f"sudo mount {device.device_node} {usb_path}")
     os.system(f"sudo mount {device.device_node} {mount_path}")
-    script_selection_menu.fmd0_slots.insert(script_selection_menu.pr_slots_last_index,
-                                            f"\x00#+#{name}#+##+#{device.device_node.replace('/', '_')}")
+    usb_slots.insert(0, f"\x00#+#{name}#+##+#{device.device_node.replace('/', '_')}")
     if GraviHub.current_menu == info_screen:
         info_event_list.append(f"added USB: {name}")
     if isinstance(GraviHub.current_menu, MenuFile):
@@ -484,7 +516,7 @@ def remove_usb(device):
         usb_path.rmdir()
     except FileNotFoundError:
         pass
-    script_selection_menu.fmd0_slots.remove(f"\x00#+#{name}#+##+#{device.device_node.replace('/', '_')}")
+    usb_slots.remove(f"\x00#+#{name}#+##+#{device.device_node.replace('/', '_')}")
     if GraviHub.current_menu == info_screen:
         info_event_list.append(f"removed USB: {name}")
     if isinstance(GraviHub.current_menu, MenuFile):
@@ -492,6 +524,22 @@ def remove_usb(device):
             time.sleep(0.01)
         GraviHub.current_menu.return_to_default()
         GraviHub.reset_menu()
+
+
+def check_for_updates():
+    global update_available
+    lcd.clear()
+    lcd.cursor_pos = (1, 0)
+    lcd.write_string("Searching updates...")
+    time.sleep(2)
+    new_update = requests.get("https://api.github.com/repos/FyrfyX8/GraviHub/releases/latest")
+    if settings["about"]["version"] in new_update.json()["name"]:
+        lcd.cursor_pos = (1, 0)
+        lcd.write_string("Updates found!      ")
+    else:
+        lcd.cursor_pos = (1, 0)
+        lcd.write_string("No updates found!   ")
+    time.sleep(2)
 
 
 def set_mac(index):
@@ -514,6 +562,30 @@ def return_dynamic_slots_to_str(slots: list):
 
 
 # DynamicSlots Functions
+
+def return_stone():
+    return signal_stone_list[signal_stone]
+
+
+def return_status():
+    return signal_status_list[signal_status]
+
+
+def return_color():
+    return gc.LOOKUP_COLOR[signal_colour]
+
+
+def return_count():
+    return signal_count
+
+
+def return_gap_step():
+    return signal_gap_step_list[signal_gap_step]
+
+
+def return_gap():
+    return signal_gap
+
 
 def return_battery_str(index):
     if float(battery_levels[index]) == 0.0:
@@ -615,7 +687,7 @@ def info_screen_callback(callback_type, value, menu):
                     for i, entry in enumerate(info_event_list):
                         if entry == pop:
                             del info_event_list[i]
-                    current_info_event = f"{' '*20}{pop}{' '* 2}"
+                    current_info_event = f"{' ' * 20}{pop}{' ' * 2}"
                     current_info_event_str = current_info_event[:20]
                     shift = 0
                     info_countdown = len(current_info_event)
@@ -682,7 +754,6 @@ def selection_menu_callback(callback_type, value, menu):
                         lcd.cursor_pos = (1, 0)
                         lcd.write_string("No Bridge Connected!")
                         time.sleep(2)
-                        lcd.clear()
                         menu.reset_menu()
 
                 else:
@@ -706,8 +777,33 @@ def selection_menu_callback(callback_type, value, menu):
         elif value == 3:
             menu.set(settings_menu)
 
+        elif value == 4:
+            if usb_slots:
+                menu.set(fmm_selection_menu)
+            else:
+                lcd.clear()
+                lcd.cursor_pos = (1, 0)
+                lcd.write_string("No usb drives found!")
+                time.sleep(2)
+                menu.reset_menu()
+
 
 selection_menu = MenuSub(selection_menu_slots, selection_menu_callback, do_setup_callback=True)
+
+fmm_selection_menu_slots = ["#+#Main Menu#+#\x03", "#+#SD -> \x04USB#+#\x02", "#+#SD <- \x04USB#+#\x02"]
+
+
+def fmm_selection_menu_callback(callback_type, value, menu):
+    if callback_type == "setup":
+        lcd.create_char(2, arrow)
+        lcd.create_char(3, back_arrow)
+        lcd.create_char(4, usb_character)
+    if callback_type == "press":
+        if value == 0:
+            GraviHub.set(selection_menu)
+
+
+fmm_selection_menu = MenuSub(fmm_selection_menu_slots, fmm_selection_menu_callback, do_setup_callback=True)
 
 connections_menu_slots = ["#+#Main Menu#+#\x02",
                           DynamicSlot("#+#{c}#+#{b}{s}", c=return_connection_name, c_args=(0,),
@@ -829,6 +925,7 @@ def script_selection_menu_callback(callback_type, value, menu):
         lcd.clear()
         lcd.create_char(0, usb_character)
         lcd.create_char(1, folder_char)
+        script_selection_menu.fmd0_slots = usb_slots
     if callback_type == "press":
         if value == 0:
             menu.set(bridge_menu)
@@ -851,18 +948,28 @@ settings_menu_slots = ["#+#Main Menu#+#\x03", "#+#Send Signals#+#\x02",
                        DynamicSlot("#+#Script Shutdown#+#[{rs}]", rs=return_setting,
                                    rs_args=("settings", "script_shutdown")),
                        DynamicSlot("#+#Auto Connect#+#[{rs}]", rs=return_setting, rs_args=("settings", "auto_connect")),
-                       "#+#Remove all MAC#+#", "#+#Disconnect all#+#", ]
+                       "#+#Remove all MAC#+#", "#+#Disconnect all#+#", "#+#No Updates#+#", "#+#About#+#\x02"]
 
 
 def settings_menu_callback(callback_type, value, menu):
     global wait2
     if callback_type == "setup":
-        pass
+        if update_available:
+            selection_menu.change_slot(8, "#+#New Update#+#\x02")
+        else:
+            print("got")
     if callback_type == "press":
         if value == 0:
             menu.set(selection_menu)
         elif value == 1:
-            pass
+            if asyncio.run(return_first_bridge(True)) is not False:
+                menu.set(send_signal_menu)
+            else:
+                lcd.clear()
+                lcd.cursor_pos = (1, 0)
+                lcd.write_string("No Bridge Connected!")
+                time.sleep(2)
+                menu.reset_menu()
         elif value == 2:
             with open("settings.ini", "w") as ini:
                 if settings.getboolean("settings", "script_setup"):
@@ -900,6 +1007,68 @@ def settings_menu_callback(callback_type, value, menu):
 
 settings_menu = MenuSub(settings_menu_slots, settings_menu_callback, do_setup_callback=True)
 
+send_signal_menu_slots = ["#+#Back#+#\x03",
+                          DynamicSlot("#+#Stone#+#[{rst}]", rst=return_stone),
+                          DynamicSlot("#+#Status#+#[{rstat}]", rstat=return_status),
+                          DynamicSlot("#+#Colour#+#[{rcl}]", rcl=return_color),
+                          DynamicSlot("#+#Count#+#[{rct}]", rct=return_count),
+                          DynamicSlot("#+#Gap step#+#[{rgps}]", rgps=return_gap_step),
+                          DynamicSlot("#+#Gap#+#[{rgp}]", rgp=return_gap),
+                          "#+#Send Signal#+#\x02"]
+
+
+def send_signal_menu_callback(callback_type, value, menu):
+    global signal_stone, signal_status, signal_colour, signal_count, signal_gap_step, signal_gap
+    if callback_type == "setup":
+        send_signal_menu.custom_cursor = False
+    if callback_type == "direction":
+        if menu.index == 1:
+            signal_stone = signal_stone + 1 if value == "L" else signal_stone - 1
+            signal_stone = len(signal_stone_list) - 1 if signal_stone < 0 \
+                else 0 if len(signal_stone_list) <= signal_stone else signal_stone
+        elif menu.index == 2:
+            signal_status = signal_status + 1 if value == "L" else signal_status - 1
+            signal_status = len(signal_status_list) - 1 if signal_status < 0 \
+                else 0 if len(signal_status_list) <= signal_status else signal_status
+        elif menu.index == 3:
+            signal_colour = signal_colour + 1 if value == "L" else signal_colour - 1
+            signal_colour = 3 if signal_colour < 1 else 1 if 3 < signal_colour \
+                else signal_colour
+        elif menu.index == 4:
+            signal_count = signal_count + 1 if value == "L" else signal_count - 1
+            signal_count = 1 if signal_count < 1 else signal_count
+        elif menu.index == 5:
+            signal_gap_step = signal_gap_step + 1 if value == "L" else signal_gap_step - 1
+            signal_gap_step = len(signal_gap_step_list) - 1 if signal_gap_step < 0 \
+                else 0 if len(signal_gap_step_list) <= signal_gap_step else signal_gap_step
+        elif menu.index == 6:
+            signal_gap = signal_gap + signal_gap_step_list[signal_gap_step] if value == "L" \
+                else signal_gap - signal_gap_step_list[signal_gap_step]
+            signal_gap = 0.0 if signal_gap < 0.0 else signal_gap
+            signal_gap = round(signal_gap, 2)
+        menu.update_current_slot()
+    if callback_type == "press":
+        if value == 0:
+            menu.set(settings_menu)
+        elif 0 < value < 7:
+            if send_signal_menu.custom_cursor:
+                send_signal_menu.custom_cursor = False
+            else:
+                send_signal_menu.custom_cursor = True
+        elif value == 7:
+            print(signal_sending)
+            if not signal_sending:
+                asyncio.run_coroutine_threadsafe(send_signal(), loop)
+            else:
+                lcd.clear()
+                lcd.cursor_pos = (1, 0)
+                lcd.write_string("Must clear first!")
+                time.sleep(2)
+                menu.reset_menu()
+
+
+send_signal_menu = MenuSub(send_signal_menu_slots, send_signal_menu_callback, do_setup_callback=True)
+
 GraviHub = RotaryMenu(right_pin=encoder_right, left_pin=encoder_left, button_pin=encoder_button, main=info_screen,
                       menu_timeout=30)
 
@@ -933,7 +1102,9 @@ if __name__ == "__main__":
                     if device.device_node.startswith("/dev/sd"):
                         add_usb(device)
 
-        time.sleep(3)
+        time.sleep(2)
+        check_for_updates()
+        time.sleep(2)
         lcd.home()
         lcd.clear()
         observer.start()
