@@ -13,6 +13,8 @@ import asyncio
 import importlib.util
 import pyudev
 import os
+import shutil
+import getpass
 
 # GraviHub v2.0.0
 
@@ -45,7 +47,7 @@ loop = asyncio.get_event_loop()
 
 # pathlib variables
 
-default = Path(settings["settings"]["scripts_path"])
+default_path = Path(settings["settings"]["scripts_path"])
 
 # pyudev variables
 
@@ -165,6 +167,8 @@ signal_gap_step = 0
 
 signal_gap = 0.0
 
+current_usb = ""
+
 signal_status_list = ["all", "starter", "switch", "bridge", "sound", "lever"]
 signal_stone_list = ["trigger", "finish", "starter", "controller", "bridge"]
 signal_gap_step_list = [0.01, 0.05, 0.1, 0.5, 1.0]
@@ -173,6 +177,7 @@ info_check_slots = []
 info_event_list = []
 usb_slots = []
 
+transfer = False
 signal_sending = False
 wait = True
 wait2 = True
@@ -473,14 +478,16 @@ def add_usb(device):
     else:
         name = device.get('ID_FS_LABEL')
 
-    usb_path = default / f"__usb-{name}_{device.device_node.replace('/', '_')}__"
+    usb_path = default_path / f"__usb-{name}_{device.device_node.replace('/', '_')}__"
     mount_path = str(usb_path).replace(' ', '\\ ')
     try:
         usb_path.mkdir()
     except FileExistsError:
         pass
-    print(f"sudo mount {device.device_node} {usb_path}")
-    os.system(f"sudo mount {device.device_node} {mount_path}")
+    print(f"sudo mount -o uid=1000,gid=1000 {device.device_node} {usb_path}")
+    os.system(f"sudo mount -o uid=1000,gid=1000 {device.device_node} {mount_path}")
+    print(getpass.getuser())
+    # os.system(f"sudo chown -R {getpass.getuser()} {mount_path}")
     usb_slots.insert(0, f"\x00#+#{name}#+##+#{device.device_node.replace('/', '_')}")
     if GraviHub.current_menu == info_screen:
         info_event_list.append(f"added USB: {name}")
@@ -498,7 +505,7 @@ def remove_usb(device):
     else:
         name = device.get('ID_FS_LABEL')
 
-    usb_path = default / f"__usb-{name}_{device.device_node.replace('/', '_')}__"
+    usb_path = default_path / f"__usb-{name}_{device.device_node.replace('/', '_')}__"
     os.system(f"sudo umount {device.device_node}")
     if str(script_selection_menu.current_path).startswith(str(usb_path)):
         script_selection_menu.return_to_default()
@@ -524,6 +531,238 @@ def remove_usb(device):
             time.sleep(0.01)
         GraviHub.current_menu.return_to_default()
         GraviHub.reset_menu()
+
+
+def sd_to_usb(current_menu: RotaryMenu):
+    global current_usb, transfer
+    transfer = True
+    pr_menu = current_menu.current_menu
+    usb_dir = ""
+
+    def move_files():
+        try:
+            from_dic = default_path
+            to_dic = default_path / usb_dir
+            index_list = []
+            lcd.clear()
+            lcd.cursor_pos = (1, 0)
+            lcd.write_string("Starting Process!")
+            time.sleep(1)
+            for key in modules:
+                if str(modules[key].__file__).startswith(str(to_dic)):
+                    index_list.append(key)
+            for index in index_list:
+                if modules[index].__name__ in sys.modules:
+                    del sys.modules[modules[index].__name__]
+                del modules[index]
+                scripts[index] = "none"
+            lcd.clear()
+            lcd.cursor_pos = (1, 0)
+            lcd.write_string(f"Deleting:")
+            time.sleep(0.1)
+            for data in to_dic.iterdir():
+                if data.is_dir() and not data.name.startswith("__"):
+                    shutil.rmtree(data)
+                    lcd.cursor_pos = (2, 0)
+                    lcd.write_string(f"{data.name[:20] if len(data.name) > 20 else data.name.ljust(20, ' ')} ")
+                    time.sleep(0.1)
+                elif data.is_file():
+                    data.unlink()
+                    lcd.cursor_pos = (2, 0)
+                    lcd.write_string(f"{data.name[:20] if len(data.name) > 20 else data.name.ljust(20, ' ')} ")
+                    time.sleep(0.1)
+            lcd.clear()
+            lcd.cursor_pos = (1, 0)
+            lcd.write_string(f"Copying:")
+            time.sleep(0.1)
+            for data in from_dic.iterdir():
+                if data.is_dir() and not (data.name.startswith("__") or data.name == "System Volume Information"):
+                    shutil.copytree(data, to_dic / data.name)
+                    lcd.cursor_pos = (2, 0)
+                    lcd.write_string(f"{data.name[:20] if len(data.name) > 20 else data.name.ljust(20, ' ')} ")
+                    time.sleep(0.1)
+                elif data.is_file():
+                    shutil.copy(data, to_dic)
+                    lcd.cursor_pos = (2, 0)
+                    lcd.write_string(f"{data.name[:20] if len(data.name) > 20 else data.name.ljust(20, ' ')} ")
+                    time.sleep(0.1)
+            lcd.clear()
+            lcd.cursor_pos = (1, 0)
+            lcd.write_string("Done!")
+            time.sleep(2)
+        except Exception as e:
+            print(e)
+
+    def continue_menu_callback(callback_type, value, menu: RotaryMenu):
+        global current_usb
+        if callback_type == "setup":
+            menu.max_index = 1
+        if callback_type == "after_setup":
+            print("hi")
+            lcd.clear()
+            lcd.cursor_pos = (0, 0)
+            lcd.write_string("All files on the usb\r\n"
+                             "Will be deleted.\r\n"
+                             "Continue?\r\n"
+                             ">yes  no")
+        if callback_type == "direction":
+            if value == "L":
+                menu.index += 1
+                menu.index = menu.index if menu.index <= 1 else 0
+            else:
+                menu.index -= 1
+                menu.index = menu.index if menu.index >= 0 else 1
+            lcd.cursor_pos = (3, 0 if menu.index == 0 else 5)
+            lcd.write_string(">")
+            lcd.cursor_pos = (3, 5 if menu.index == 0 else 0)
+            lcd.write_string(" ")
+        if callback_type == "press":
+            if value == 0:
+                current_usb = usb_dir
+                move_files()
+                menu.set(pr_menu)
+            if value == 1:
+                menu.set(pr_menu)
+
+    continue_menu = MenuSub([], continue_menu_callback, do_setup_callback=True, after_reset_callback=True,
+                            custom_cursor=True)
+
+    def usb_selection_menu_callback(callback_type, value, menu: RotaryMenu):
+        nonlocal usb_dir
+        if callback_type == "setup":
+            lcd.create_char(0, usb_character)
+            lcd.create_char(2, back_arrow)
+            usb_selection_menu.slots = ["#+#Back#+#\x02"]
+            for slot in usb_slots:
+                usb_selection_menu.slots.append(f"SD -> {slot}")
+        if callback_type == "press":
+            if value == 0:
+                menu.set(pr_menu)
+            if value > 0:
+                slot = usb_selection_menu.slots[value].split("#+#")
+                usb_dir = f"__usb-{slot[1]}_{slot[3]}__"
+                print(usb_dir)
+                menu.set(continue_menu)
+
+    usb_selection_menu = MenuSub([], usb_selection_menu_callback, do_setup_callback=True)
+
+    current_menu.set(usb_selection_menu)
+
+
+def sd_from_usb(current_menu: RotaryMenu):
+    global current_usb, transfer
+    transfer = True
+    pr_menu = current_menu.current_menu
+    usb_dir = ""
+
+    def move_files():
+        try:
+            from_dic = default_path / usb_dir
+            to_dic = default_path
+            index_list = []
+            lcd.clear()
+            lcd.cursor_pos = (1, 0)
+            lcd.write_string("Starting Process!")
+            time.sleep(1)
+            for key in modules:
+                if str(modules[key].__file__).startswith(str(to_dic)):
+                    index_list.append(key)
+            for index in index_list:
+                if modules[index].__name__ in sys.modules:
+                    del sys.modules[modules[index].__name__]
+                del modules[index]
+                scripts[index] = "none"
+            lcd.clear()
+            lcd.cursor_pos = (1, 0)
+            lcd.write_string(f"Deleting:")
+            time.sleep(0.1)
+            for data in to_dic.iterdir():
+                if data.is_dir() and not data.name.startswith("__"):
+                    shutil.rmtree(data)
+                    lcd.cursor_pos = (2, 0)
+                    lcd.write_string(f"{data.name[:20] if len(data.name) > 20 else data.name.ljust(20, ' ')} ")
+                    time.sleep(0.1)
+                elif data.is_file():
+                    data.unlink()
+                    lcd.cursor_pos = (2, 0)
+                    lcd.write_string(f"{data.name[:20] if len(data.name) > 20 else data.name.ljust(20, ' ')} ")
+                    time.sleep(0.1)
+            lcd.clear()
+            lcd.cursor_pos = (1, 0)
+            lcd.write_string(f"Copying:")
+            time.sleep(0.1)
+            for data in from_dic.iterdir():
+                if data.is_dir() and not (data.name.startswith("__") or data.name == "System Volume Information"):
+                    shutil.copytree(data, to_dic / data.name)
+                    lcd.cursor_pos = (2, 0)
+                    lcd.write_string(f"{data.name[:20] if len(data.name) > 20 else data.name.ljust(20, ' ')} ")
+                    time.sleep(0.1)
+                elif data.is_file():
+                    shutil.copy(data, to_dic)
+                    lcd.cursor_pos = (2, 0)
+                    lcd.write_string(f"{data.name[:20] if len(data.name) > 20 else data.name.ljust(20, ' ')} ")
+                    time.sleep(0.1)
+            lcd.clear()
+            lcd.cursor_pos = (1, 0)
+            lcd.write_string("Done!")
+            time.sleep(2)
+        except Exception as e:
+            print(e)
+
+    def continue_menu_callback(callback_type, value, menu: RotaryMenu):
+        global current_usb
+        if callback_type == "setup":
+            menu.max_index = 1
+        if callback_type == "after_setup":
+            print("hi")
+            lcd.clear()
+            lcd.cursor_pos = (0, 0)
+            lcd.write_string("All current Scripts\r\n"
+                             "Get deleted.\r\n"
+                             "Continue?\r\n"
+                             ">yes  no")
+        if callback_type == "direction":
+            if value == "L":
+                menu.index += 1
+                menu.index = menu.index if menu.index <= 1 else 0
+            else:
+                menu.index -= 1
+                menu.index = menu.index if menu.index >= 0 else 1
+            lcd.cursor_pos = (3, 0 if menu.index == 0 else 5)
+            lcd.write_string(">")
+            lcd.cursor_pos = (3, 5 if menu.index == 0 else 0)
+            lcd.write_string(" ")
+        if callback_type == "press":
+            if value == 0:
+                current_usb = usb_dir
+                move_files()
+                menu.set(pr_menu)
+            if value == 1:
+                menu.set(pr_menu)
+
+    continue_menu = MenuSub([], continue_menu_callback, do_setup_callback=True, after_reset_callback=True,
+                            custom_cursor=True)
+
+    def usb_selection_menu_callback(callback_type, value, menu: RotaryMenu):
+        nonlocal usb_dir
+        if callback_type == "setup":
+            lcd.create_char(0, usb_character)
+            lcd.create_char(2, back_arrow)
+            usb_selection_menu.slots = ["#+#Back#+#\x02"]
+            for slot in usb_slots:
+                usb_selection_menu.slots.append(f"SD <- {slot}")
+        if callback_type == "press":
+            if value == 0:
+                menu.set(pr_menu)
+            if value > 0:
+                slot = usb_selection_menu.slots[value].split("#+#")
+                usb_dir = f"__usb-{slot[1]}_{slot[3]}__"
+                print(usb_dir)
+                menu.set(continue_menu)
+
+    usb_selection_menu = MenuSub([], usb_selection_menu_callback, do_setup_callback=True)
+
+    current_menu.set(usb_selection_menu)
 
 
 def check_for_updates():
@@ -801,6 +1040,10 @@ def fmm_selection_menu_callback(callback_type, value, menu):
     if callback_type == "press":
         if value == 0:
             GraviHub.set(selection_menu)
+        if value == 1:
+            sd_to_usb(menu)
+        if value == 2:
+            sd_from_usb(menu)
 
 
 fmm_selection_menu = MenuSub(fmm_selection_menu_slots, fmm_selection_menu_callback, do_setup_callback=True)
@@ -940,7 +1183,7 @@ def script_selection_menu_callback(callback_type, value, menu):
         menu.set(bridge_menu)
 
 
-script_selection_menu = MenuFile(default, script_selection_menu_callback, pr_slots=script_selection_menu_pr_slots,
+script_selection_menu = MenuFile(default_path, script_selection_menu_callback, pr_slots=script_selection_menu_pr_slots,
                                  dir_affix="\x01#+#", do_setup_callback=True)
 
 settings_menu_slots = ["#+#Main Menu#+#\x03", "#+#Send Signals#+#\x02",
