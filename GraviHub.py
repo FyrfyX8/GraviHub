@@ -4,7 +4,11 @@ from gravitraxconnect import gravitrax_constants as gc
 from RPLCD.i2c import CharLCD
 from configparser import ConfigParser
 from pathlib import Path
+from MenuTypes.MenuNetworkSettings import *
 
+import fcntl
+import socket
+import struct
 import sys
 import time
 import requests
@@ -347,7 +351,7 @@ async def send_signal():
                 gap=signal_gap):
             signal_sending = False
         signal_sending = False
-    except Exception as e:
+    except gb.BleakError:
         signal_sending = False
 
 
@@ -771,13 +775,17 @@ def check_for_updates():
     lcd.cursor_pos = (1, 0)
     lcd.write_string("Searching updates...")
     time.sleep(2)
-    new_update = requests.get("https://api.github.com/repos/FyrfyX8/GraviHub/releases/latest")
-    if settings["about"]["version"] in new_update.json()["name"]:
+    try:
+        new_update = requests.get("https://api.github.com/repos/FyrfyX8/GraviHub/releases/latest", timeout=5)
+        if settings["about"]["version"] in new_update.json()["name"]:
+            lcd.cursor_pos = (1, 0)
+            lcd.write_string("Updates found!      ")
+        else:
+            lcd.cursor_pos = (1, 0)
+            lcd.write_string("No updates found!   ")
+    except requests.ConnectionError:
         lcd.cursor_pos = (1, 0)
-        lcd.write_string("Updates found!      ")
-    else:
-        lcd.cursor_pos = (1, 0)
-        lcd.write_string("No updates found!   ")
+        lcd.write_string("No connection!")
     time.sleep(2)
 
 
@@ -905,6 +913,7 @@ def info_screen_callback(callback_type, value, menu):
         info_event_list = []
     if callback_type == "after_setup":
         async def info_screen_updater():
+            lcd.clear()
             global info_check_slots, info_event_list
             info_countdown = 0
             shift = 0
@@ -1191,7 +1200,8 @@ settings_menu_slots = ["#+#Main Menu#+#\x03", "#+#Send Signals#+#\x02",
                        DynamicSlot("#+#Script Shutdown#+#[{rs}]", rs=return_setting,
                                    rs_args=("settings", "script_shutdown")),
                        DynamicSlot("#+#Auto Connect#+#[{rs}]", rs=return_setting, rs_args=("settings", "auto_connect")),
-                       "#+#Remove all MAC#+#", "#+#Disconnect all#+#", "#+#No Updates#+#", "#+#About#+#\x02"]
+                       "#+#Remove all MAC#+#", "#+#Disconnect all#+#", "#+#No Updates#+#", "#+#Network Settings#+#\x02",
+                       "#+#About#+#\x02"]
 
 
 def settings_menu_callback(callback_type, value, menu):
@@ -1246,9 +1256,41 @@ def settings_menu_callback(callback_type, value, menu):
                 time.sleep(0.01)
             wait2 = True
             menu.reset_menu()
+        elif value == 7:
+            pass
+        elif value == 8:
+            menu.set(wlan_settings_menu)
+        elif value == 9:
+            menu.set(about_menu)
 
 
 settings_menu = MenuSub(settings_menu_slots, settings_menu_callback, do_setup_callback=True)
+
+wlan_settings_menu = MenuNetworkSettings(Path("/etc/netplan/50-cloud-init.yaml"), back_arrow, arrow)
+
+
+def about_menu_callback(callback_type, value, menu):
+    if callback_type == "after_setup":
+        lcd.clear()
+        lcd.home()
+        lcd.write_string(f"GraviHub v.{settings['about']['version']}\r\n")
+
+        def get_mac(interface):
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            info = fcntl.ioctl(s.fileno(), 0x8927, struct.pack('256s', bytes(interface, 'utf-8')[:15]))
+            return ':'.join('%02x' % b for b in info[18:24]).upper()
+
+        lcd.write_string(f"{get_mac('wlan0')}\r\n")
+        lcd.write_string("Made by FyrfyX8\r\n")
+        lcd.write_string("More info on GitHub!")
+
+
+    if callback_type == "press":
+        menu.set(settings_menu)
+
+
+about_menu = MenuSub([], about_menu_callback, do_setup_callback=True, after_reset_callback=True, custom_cursor=True)
+
 
 send_signal_menu_slots = ["#+#Back#+#\x03",
                           DynamicSlot("#+#Stone#+#[{rst}]", rst=return_stone),
