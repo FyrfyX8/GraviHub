@@ -4,6 +4,8 @@ from RPLCD.i2c import CharLCD
 import subprocess
 import yaml
 import asyncio
+import re
+
 
 class MenuNetworkSettings(MenuType):
 
@@ -79,11 +81,69 @@ class MenuNetworkSettings(MenuType):
         self.forward_symbol = forward_symbol
         self.pr_menu = None
         self.saved_connections = []
-        super().__init__(slots=["#+#Back#+#\x00"] + self.saved_connections, value_callback=self.value_callback,
+        self.found_wifis = {}
+        super().__init__(slots=["#+#Back#+#\x00"] + self.saved_connections, value_callback=self.__value_callback,
                          do_setup_callback=True,
                          after_reset_callback=False, custom_cursor=False)
 
-    def value_callback(self, callback_type, value, menu: RotaryMenu):
+    def __wifi_scan(self):
+        scan = subprocess.run("sudo iw wlan0 scan", shell=True, capture_output=True).stdout.decode()
+
+
+        def dbm_to_level(dbm):
+            match dbm:
+                case _ if signal >= -50:
+                    return 4
+                case _ if -60 <= signal < -50:
+                    return 3
+                case _ if -70 <= signal < -60:
+                    return 2
+                case _ if -80 <= signal < -70:
+                    return 1
+                case _:
+                    return 0
+
+        temp = []
+
+        for m in re.finditer("signal:", scan):
+            ssid = scan[scan.find("SSID:", m.end()) + 6: scan.find("\n", scan.find("SSID:", m.end()))]
+            signal = float(scan[m.end() + 1:scan.find("dBm", m.end())])
+            temp.append((ssid, dbm_to_level(signal)))
+        self.found_wifis = {n: {"signal": s, "password": None} for n, s in sorted(temp, key=lambda k: k[1]) if n}
+        print(self.found_wifis)
+    def __wifis_to_slots(self):
+        def signal_map(signal):
+            match signal:
+                case 0:
+                    return "\x02"
+                case 1:
+                    return "\x03"
+                case 2:
+                    return "\x04"
+                case 3:
+                    return "\x05"
+                case 4:
+                    return "\x06"
+                case _:
+                    return ""
+
+        self.slots = ["#+#Back#+#\x00"]
+        
+        self.__wifi_scan()
+        saved = subprocess.run(f"sudo cat {self.config_file}", shell=True, capture_output=True)
+        temp = yaml.safe_load(saved.stdout)
+
+        self.saved_connections = {n: {"signal": self.found_wifis.get(n, {"signal": None})["signal"], "password":
+                                  temp["network"]["wifis"]["wlan0"]["access-points"][n]["password"]}
+                                  for n in temp["network"]["wifis"]["wlan0"]["access-points"]}
+
+        self.slots.extend([f"\x07#+#{n}#+#{signal_map(self.saved_connections[n]['signal'])}"
+                           for n in self.saved_connections])
+        self.slots.extend([f"#+#{n}#+#{signal_map(self.found_wifis[n]['signal'])}" for n in self.found_wifis])
+        self.slots.append("#+#Reload#+#")
+
+
+    def __value_callback(self, callback_type, value, menu: RotaryMenu):
         print("test")
         if callback_type == "setup":
             menu.lcd.create_char(0, self.back_symbol)
@@ -94,22 +154,14 @@ class MenuNetworkSettings(MenuType):
             menu.lcd.create_char(5, self.connection_high)
             menu.lcd.create_char(6, self.connection_full)
             menu.lcd.create_char(7, self.lock)
-
-            saved = subprocess.run(f"sudo cat {self.config_file}", shell=True, capture_output=True)
-            temp = yaml.safe_load(saved.stdout)
-            self.saved_connections = [ap for ap in temp["network"]["wifis"]["wlan0"]["access-points"]]
-            self.slots = ["#+#Back#+#\x00"] + [f"\x07#+#{ap}#+#" for ap in self.saved_connections]
             try:
-                avaiablbe = Cell.all("wlan0")
-                for cell in avaiablbe:
-                    print(cell.ssid)
+                self.__wifis_to_slots()
             except Exception as e:
-                print(f"ex: {e}")
+                print(f"error: {e}")
 
             async def connection_updater():
                 pass
-
-
         if callback_type == "press":
             if value == 1:
                 menu.set(self.pr_menu if not None else menu.main)
+
