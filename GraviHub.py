@@ -1,10 +1,8 @@
 from RotaryMenu import *
 from gravitraxconnect import gravitrax_bridge as gb
 from gravitraxconnect import gravitrax_constants as gc
+from MenuTypes.NetworkSettings.MenuNetworkSettings import *
 from RPLCD.i2c import CharLCD
-from configparser import ConfigParser
-from pathlib import Path
-from MenuTypes.MenuNetworkSettings import *
 
 import fcntl
 import socket
@@ -1207,6 +1205,8 @@ settings_menu_slots = ["#+#Main Menu#+#\x03", "#+#Send Signals#+#\x02",
 def settings_menu_callback(callback_type, value, menu):
     global wait2
     if callback_type == "setup":
+        lcd.create_char(2, arrow)
+        lcd.create_char(3, back_arrow)
         if update_available:
             selection_menu.change_slot(8, "#+#New Update#+#\x02")
         else:
@@ -1260,6 +1260,7 @@ def settings_menu_callback(callback_type, value, menu):
             pass
         elif value == 8:
             menu.set(wlan_settings_menu)
+            wlan_settings_menu.pr_menu = settings_menu
         elif value == 9:
             menu.set(about_menu)
 
@@ -1284,13 +1285,11 @@ def about_menu_callback(callback_type, value, menu):
         lcd.write_string("Made by FyrfyX8\r\n")
         lcd.write_string("More info on GitHub!")
 
-
     if callback_type == "press":
         menu.set(settings_menu)
 
 
 about_menu = MenuSub([], about_menu_callback, do_setup_callback=True, after_reset_callback=True, custom_cursor=True)
-
 
 send_signal_menu_slots = ["#+#Back#+#\x03",
                           DynamicSlot("#+#Stone#+#[{rst}]", rst=return_stone),
@@ -1357,17 +1356,124 @@ send_signal_menu = MenuSub(send_signal_menu_slots, send_signal_menu_callback, do
 GraviHub = RotaryMenu(right_pin=encoder_right, left_pin=encoder_left, button_pin=encoder_button, main=info_screen,
                       menu_timeout=30)
 
+
 # menu_update_handler
+def show_logo(start):
+    uml = (
+        0b11000,
+        0b00110,
+        0b00010,
+        0b00010,
+        0b00010,
+        0b10000,
+        0b00110,
+        0b00001
+    )
+
+    ull = (
+        0b00100,
+        0b00100,
+        0b00100,
+        0b00100,
+        0b00011,
+        0b00000,
+        0b00000,
+        0b00000
+    )
+
+    oll = (
+        0b00000,
+        0b00000,
+        0b00000,
+        0b00011,
+        0b00100,
+        0b00100,
+        0b00100,
+        0b00100
+    )
+
+    oml = (
+        0b00001,
+        0b00110,
+        0b11000,
+        0b00000,
+        0b00000,
+        0b00000,
+        0b00000,
+        0b00000
+    )
+
+    omr = (
+        0b10000,
+        0b01000,
+        0b01000,
+        0b01000,
+        0b01000,
+        0b01000,
+        0b01000,
+        0b01000
+    )
+
+    orr = (
+        0b00000,
+        0b00000,
+        0b00000,
+        0b00000,
+        0b00100,
+        0b00100,
+        0b00100,
+        0b00100
+    )
+
+    urr = (
+        0b00100,
+        0b00100,
+        0b00000,
+        0b00100,
+        0b11000,
+        0b00000,
+        0b00000,
+        0b00000
+    )
+
+    umr = (
+        0b01011,
+        0b01100,
+        0b01000,
+        0b01000,
+        0b01000,
+        0b00011,
+        0b01100,
+        0b10000
+    )
+
+    lcd.create_char(0, oll)
+    lcd.create_char(1, oml)
+    lcd.create_char(2, omr)
+    lcd.create_char(3, orr)
+
+    lcd.create_char(4, ull)
+    lcd.create_char(5, uml)
+    lcd.create_char(6, umr)
+    lcd.create_char(7, urr)
+
+    lcd.cursor_pos = (start, 0)
+
+    lcd.write_string("        \x00\x01\x02\x03        \r\n")
+    lcd.write_string("        \x04\x05\x06\x07        ")
 
 
 if __name__ == "__main__":
     try:
+        GraviHub.wait = True
         monitor.filter_by('block')
         observer = pyudev.MonitorObserver(monitor, usb_handler)
-
+        show_logo(2)
         lcd.cursor_pos = (1, 0)
         lcd.write_string("Welcome to GraviHub!\r\n")
-        time.sleep(0.5)
+        time.sleep(5)
+        lcd.clear()
+        lcd.cursor_pos = (1, 0)
         loading_usb = 0
         for device in context.list_devices(subsystem='block', DEVTYPE='partition'):
             print('{0} ({1})'.format(device.device_node, device.get('ID_FS_TYPE')))
@@ -1393,6 +1499,7 @@ if __name__ == "__main__":
         lcd.home()
         lcd.clear()
         observer.start()
+        GraviHub.wait = False
         GraviHub.set()
         loop.run_forever()
     except KeyboardInterrupt:
@@ -1401,6 +1508,7 @@ if __name__ == "__main__":
             if 'ID_FS_TYPE' in device:
                 if device.device_node.startswith("/dev/sd"):
                     remove_usb(device)
+        wlan_settings_menu.stop_server()
         lcd.close(clear=True)
         GPIO.cleanup()
         loop.stop()
