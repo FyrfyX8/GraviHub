@@ -3,6 +3,7 @@ import signal
 
 from RotaryMenu import MenuType, RotaryMenu
 
+from shlex import quote
 import time
 import re
 import subprocess
@@ -185,7 +186,12 @@ class MenuNetworkSettings(MenuType):
                 ac.read_string(subprocess.run(f"sudo cat '{self.path}/{file}'", shell=True,
                                               capture_output=True).stdout.decode())
                 if ac["connection"]["type"] == "wifi":
-                    self.saved_wifis.append({"SSID": ac["connection"]["id"], "PASSWORD": ac["wifi-security"]["psk"],
+                    ssid = ac["connection"]["id"]
+                    try:
+                        pw = ac["wifi-security"]["psk"]
+                    except KeyError:
+                        pw = None
+                    self.saved_wifis.append({"SSID": ssid, "PASSWORD": pw,
                                              "BARS": None, "SECURITY": None, "INDEX": None})
 
         col_filter = ["CHAN", "MODE"]
@@ -327,6 +333,11 @@ class MenuNetworkSettings(MenuType):
                 menu.set(self)
 
     # AC-Settings
+    def __return(self, menu):
+        self.value_callback = self.__connection_list_callback
+        self.do_scan = True
+        menu.set(self)
+
     def __connection_slots(self):
         self.slots = ["#+#Back#+#\x00"]
         temp = self.current_wifis[self.current_index]["IN-USE"]
@@ -340,25 +351,15 @@ class MenuNetworkSettings(MenuType):
         subprocess.run("sudo nmcli d disconnect wlan0", shell=True, capture_output=True)
         menu.reset_menu()
 
-    def __connection_attempt(self, menu, ssid, password=None):
-        try:
-            if password is None:
-                command = ["sudo", "nmcli", "d", "wifi", "connect", ssid]
-            else:
-                command = ["sudo", "nmcli", "d", "wifi", "connect", ssid, "password", password]
-            subprocess.run(command, capture_output=True, timeout=120, check=True)
-        except subprocess.CalledProcessError as e:
-            print(f"Error: {e.returncode}\n{e.stdout}\n{e.stderr}")
-            return False
-        except subprocess.TimeoutExpired:
-            print("Connection attempt timed out.")
-            return False
-        except Exception as e:
-            print(f"An error occurred: {e}")
-            return False
-
+    def __connection_attempt(self, menu, ssid, password: str = None):
         success = False
+
         try:
+            command = ["sudo", "nmcli", "d", "wifi", "connect", ssid]
+            if password is not None:
+                command.extend(["password", f"{quote(str(password))}"])
+            subprocess.run(command, capture_output=True, timeout=120, check=True)
+
             for i in range(120):
                 if ssid in subprocess.run("nmcli c show --active | grep wlan0", shell=True, capture_output=True,
                                           text=True).stdout:
@@ -366,8 +367,12 @@ class MenuNetworkSettings(MenuType):
                     break
                 else:
                     time.sleep(1)
-        except:
-            print(traceback.print_exc())
+        except subprocess.CalledProcessError as e:
+            print(f"Error: {e.returncode}\n{e.stdout}\n{e.stderr}")
+        except subprocess.TimeoutExpired:
+            print("Connection attempt timed out.")
+        except Exception as e:
+            print(f"An error occurred: {e}")
 
         if not success:
             subprocess.run(f"sudo nmcli c delete '{ssid}'",
@@ -379,6 +384,7 @@ class MenuNetworkSettings(MenuType):
         menu.wait = False
         self.flag = True
         self.con = False
+
         async def countdown():
             c = 10
             while c > 0 and self.flag:
@@ -397,9 +403,6 @@ class MenuNetworkSettings(MenuType):
         menu.wait = True
         self.flag = False
         return not self.con
-
-
-
 
     def __password_promt(self, menu):
         def get_local_ip():
@@ -445,7 +448,7 @@ class MenuNetworkSettings(MenuType):
 
         if self.password and not timeout == 0:
             menu.lcd.write_string("Got Password!")
-            time.sleep(1)
+            time.sleep(2)
             menu.lcd.clear()
             menu.lcd.cursor_pos = (1, 0)
             menu.lcd.write_string("Connecting...")
@@ -458,8 +461,7 @@ class MenuNetworkSettings(MenuType):
                 menu.lcd.write_string("An Error occurred!")
                 time.sleep(1)
                 if self.__contin(menu):
-                    self.do_scan = True
-                    menu.reset_menu()
+                    self.__return(menu)
                 else:
                     self.__password_promt(menu)
             else:
@@ -467,22 +469,19 @@ class MenuNetworkSettings(MenuType):
                 menu.lcd.cursor_pos = (1, 0)
                 menu.lcd.write_string("Successful!")
                 time.sleep(1)
-                self.do_scan = True
-                menu.reset_menu()
+                self.__return(menu)
         elif timeout == 0:
             menu.lcd.write_string("Timeout!")
             time.sleep(1)
             if self.__contin(menu):
-                self.do_scan = True
-                menu.reset_menu()
+                self.__return(menu)
             else:
                 self.__password_promt(menu)
         else:
             menu.lcd.write_string("An Error occurred!")
             time.sleep(1)
             if self.__contin(menu):
-                self.do_scan = True
-                menu.reset_menu()
+                self.__return(menu)
             else:
                 self.__password_promt(menu)
 
@@ -495,7 +494,8 @@ class MenuNetworkSettings(MenuType):
 
         temp = self.current_wifis[self.current_index]["PASSWORD"]
         temp2 = self.current_wifis[self.current_index]["SECURITY"]
-        if temp is None and temp2 is not None:
+        print(f"pw:{temp}, sec:{temp2}")
+        if temp is None and temp2 != "--":
             print("New")
             self.__password_promt(menu)
         else:
@@ -509,17 +509,17 @@ class MenuNetworkSettings(MenuType):
                 menu.lcd.write_string("An Error occurred!")
                 time.sleep(1)
                 if self.__contin(menu):
-                    self.do_scan = True
-                    menu.reset_menu()
+                    self.__return(menu)
                 else:
-                    self.__password_promt(menu)
+                    if temp2 != "--":
+                        self.__password_promt(menu)
+
             else:
                 menu.lcd.clear()
                 menu.lcd.cursor_pos = (1, 0)
                 menu.lcd.write_string("Successful!")
                 time.sleep(1)
-                self.do_scan = True
-                menu.reset_menu()
+                self.__return(menu)
 
     def __ac_callback(self, callback_type, value, menu: RotaryMenu):
         if callback_type == "setup":
@@ -542,9 +542,7 @@ class MenuNetworkSettings(MenuType):
                 self.flag = False
                 self.con = True
             elif self.slots[value].split("#+#")[1] == "Back":
-                self.value_callback = self.__connection_list_callback
-                self.do_scan = False
-                menu.set(self)
+                self.__return(menu)
             elif self.slots[value].split("#+#")[1] == "Disconnect":
                 self.__disconnect(menu)
             elif self.slots[value].split("#+#")[1] == "Connect":
