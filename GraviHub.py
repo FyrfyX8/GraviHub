@@ -1471,6 +1471,7 @@ if __name__ == "__main__":
         show_logo(2)
         lcd.cursor_pos = (1, 0)
         lcd.write_string("Welcome to GraviHub!\r\n")
+        GraviHub.swap_encoder_input(settings.getboolean("encoder", "inputs_flipped"))
         time.sleep(5)
         lcd.clear()
         lcd.cursor_pos = (1, 0)
